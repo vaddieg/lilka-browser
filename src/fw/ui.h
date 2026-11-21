@@ -46,6 +46,8 @@ private:
 
     // input
     kb::Keyboard kb_;
+    std::vector<std::string> qsCache_;  // Quick Access list (cached; avoids SD read per key)
+    int qsSize() const { return (int)qsCache_.size(); }
     std::string inputPurpose_;   // "url" | field name
     std::string inputFormAction_;
     std::string inputFormMethod_;

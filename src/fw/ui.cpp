@@ -88,6 +88,7 @@ bool Browser::begin(Arduino_GFX* gfx) {
     if (store::begin()) {
         if (store::get("font", "1") == "2") fontScale_ = 2;
         net::loadCookieJar();
+        qsCache_ = recentList();
     }
     history_.push_back("");  // home slot
     currentUrl_ = "";
@@ -626,9 +627,11 @@ bool Browser::loop() {
             static const char* items[] = {
                 "Font size", "Page cache", "Language", "Link list",
             };
-            if (just(Buttons::UP)) linklistSel_ = (linklistSel_ + 3) % 4;
-            else if (just(Buttons::DOWN)) linklistSel_ = (linklistSel_ + 1) % 4;
+            bool touched = false;
+            if (just(Buttons::UP)) { linklistSel_ = (linklistSel_ + 3) % 4; touched = true; }
+            else if (just(Buttons::DOWN)) { linklistSel_ = (linklistSel_ + 1) % 4; touched = true; }
             else if (just(Buttons::A)) {
+                touched = true;
                 if (linklistSel_ == 0) {
                     fontScale_ = fontScale_ == 1 ? 2 : 1;
                     store::set("font", fontScale_ == 1 ? "1" : "2");
@@ -648,17 +651,18 @@ bool Browser::loop() {
                 }
             } else if (just(Buttons::B)) {
                 mode_ = PAGE;
+                touched = true;
             }
-            act = true;
+            if (touched) { dirty_ = true; act = true; }
             break;
         }
         case QUICKSTART: {
-            auto recent = recentList();
-            int n = (int)recent.size();
-            if (just(Buttons::UP)) { linklistSel_ = (linklistSel_ + n) % (n + 1); Serial.printf("[qs] sel=%d/%d\n", linklistSel_, n); }
-            else if (just(Buttons::DOWN)) { linklistSel_ = (linklistSel_ + 1) % (n + 1); Serial.printf("[qs] sel=%d/%d\n", linklistSel_, n); }
+            // list size without touching SD: render path recomputes when dirty
+            int n = qsSize();
+            if (just(Buttons::UP)) { linklistSel_ = (linklistSel_ + n) % (n + 1); dirty_ = true; act = true; }
+            else if (just(Buttons::DOWN)) { linklistSel_ = (linklistSel_ + 1) % (n + 1); dirty_ = true; act = true; }
             else if (just(Buttons::A) || just(Buttons::START)) {
-                Serial.printf("[qs] activate sel=%d n=%d\n", linklistSel_, n);
+                auto recent = recentList();
                 if (linklistSel_ < n) {
                     navigate(recent[linklistSel_]);
                 } else {
@@ -667,11 +671,14 @@ bool Browser::loop() {
                     kb_.reset();
                     inputFrom_ = QUICKSTART;
                     mode_ = INPUTMODE;
+                    dirty_ = true;
                 }
+                act = true;
             } else if (just(Buttons::B)) {
                 mode_ = PAGE;
+                dirty_ = true;
+                act = true;
             }
-            act = true;
             break;
         }
         case INPUTMODE: {
@@ -703,7 +710,6 @@ bool Browser::loop() {
                     }
                 }
             }
-            act = true;
             break;
         }
         case BUSY:
@@ -734,9 +740,9 @@ bool Browser::loop() {
                 break;
             }
             case QUICKSTART: {
-                auto items = recentList();
-                items.push_back("Enter URL...");
-                renderPopup("Go (C)", items, linklistSel_);
+                qsCache_ = recentList();
+                qsCache_.push_back("Enter URL...");
+                renderPopup("Go (C)", qsCache_, linklistSel_);
                 break;
             }
             case INPUTMODE:
