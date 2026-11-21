@@ -1,0 +1,280 @@
+// Mac test target for the HTML parser: unit tests + CLI for the
+// autonomous test loop.
+//
+// Build & test:  make test
+// CLI:           ./build/parser-test <fixture.html | http(s)://url>
+//                (URLs are fetched with curl; output is the IR dump)
+#include "../src/html_parser.h"
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <sstream>
+#include <string>
+
+using namespace lilka;
+
+static int failures = 0;
+#define CHECK(cond) do { \
+    if (!(cond)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); failures++; } \
+} while (0)
+
+static std::string slurp(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+static Page parse(const std::string& html) {
+    html::Parser p;
+    p.feed(html.data(), html.size());
+    p.finish();
+    return p.page();
+}
+
+static size_t countKind(const Page& pg, BlockKind k) {
+    size_t n = 0;
+    for (auto& b : pg.blocks) if (b.kind == k) n++;
+    return n;
+}
+
+// ---------------- unit tests ----------------
+
+void test_basics() {
+    Page pg = parse("<html><body>"
+                    "<h1>Title</h1>"
+                    "<p>Hello <b>world</b> &amp; friends</p>"
+                    "<a href=\"https://example.com/x\">Click me</a>"
+                    "</body></html>");
+    CHECK(countKind(pg, BlockKind::Heading) == 1);
+    CHECK(pg.blocks[0].text == "Title");
+    CHECK(pg.blocks[0].level == 1);
+    CHECK(countKind(pg, BlockKind::Text) == 1);
+    CHECK(pg.blocks[1].text == "Hello world & friends");
+    CHECK(countKind(pg, BlockKind::Link) == 1);
+    CHECK(pg.blocks[2].href == "https://example.com/x");
+    CHECK(pg.blocks[2].text == "Click me");
+}
+
+void test_script_style_stripped() {
+    Page pg = parse("<html><head>"
+                    "<script>var x = '<div>fake</div> <a href=x>bad</a>';</script>"
+                    "<style>.a { color: red; }</style>"
+                    "</head><body>Real text</body></html>");
+    for (auto& b : pg.blocks) {
+        CHECK(b.text.find("fake") == std::string::npos);
+        CHECK(b.text.find("color") == std::string::npos);
+    }
+    CHECK(countKind(pg, BlockKind::Text) >= 1);
+}
+
+void test_noscript_rendered() {
+    // We are a no-JS client: <noscript> fallback content must be rendered,
+    // while <script> content stays stripped.
+    Page pg = parse("<body>"
+                    "<noscript><a href=\"/fallback\">JS-free link</a> "
+                    "<p>noscript text</p></noscript>"
+                    "<script>var s = '<a href=\"/bad\">no</a>';</script>"
+                    "</body>");
+    bool foundLink = false, foundText = false;
+    for (auto& b : pg.blocks) {
+        if (b.kind == BlockKind::Link && b.href == "/fallback") foundLink = true;
+        if (b.text == "noscript text") foundText = true;
+        CHECK(b.text.find("var s") == std::string::npos);
+    }
+    CHECK(foundLink);
+    CHECK(foundText);
+}
+
+void test_entities() {
+    Page pg = parse("<p>a&#65;b &#x42; &mdash; &nbsp;end</p>");
+    CHECK(pg.blocks.size() == 1);
+    CHECK(pg.blocks[0].text == "aAb B \xE2\x80\x94 " "\xC2\xA0" "end");
+}
+
+void test_cyrillic() {
+    Page pg = parse("<h2>\xD0\x9A\xD0\xBE\xD1\x88</h2><p>\xD0\xA5\xD0\xBE\xD1\x80\xD0\xBE\xD1\x88</p>");
+    CHECK(pg.blocks[0].text == "\xD0\x9A\xD0\xBE\xD1\x88");
+    CHECK(pg.blocks[1].text == "\xD0\xA5\xD0\xBE\xD1\x80\xD0\xBE\xD1\x88");
+}
+
+void test_inputs_forms() {
+    Page pg = parse("<form action=\"/search\"><input name=\"q\" placeholder=\"Search\">"
+                    "<button>Go</button></form>"
+                    "<input type=\"hidden\" name=\"x\">");
+    CHECK(countKind(pg, BlockKind::Input) == 1);
+    CHECK(pg.blocks[0].name == "q");
+    CHECK(pg.blocks[0].formAction == "/search");
+    CHECK(countKind(pg, BlockKind::Button) == 1);
+    CHECK(pg.blocks[1].href == "/search");
+}
+
+void test_tables() {
+    Page pg = parse("<table>"
+                    "<tr><th>Key</th><th>Value</th></tr>"
+                    "<tr><td>Player</td><td>Lilka</td></tr>"
+                    "<tr><td>RAM</td><td>8 MB</td><td>PSRAM</td></tr>"
+                    "</table>");
+    CHECK(countKind(pg, BlockKind::Table) == 1);
+    const auto& t = pg.blocks[0];
+    CHECK(t.rows.size() == 3);
+    CHECK(t.rows[1].k == "Player" && t.rows[1].v == "Lilka");
+    CHECK(t.rows[2].v.find("8 MB") != std::string::npos);
+}
+
+void test_select() {
+    // design: options carry submit *values* (option value attr; falls back to text)
+    Page pg = parse("<form><select name=\"sort\">"
+                    "<option value=\"new\">New</option>"
+                    "<option value=\"best\" selected>Best</option>"
+                    "<option>Text</option>"
+                    "</select></form>");
+    CHECK(countKind(pg, BlockKind::Select) == 1);
+    const auto& s = pg.blocks[0];
+    CHECK(s.options.size() == 3);
+    CHECK(s.options[0] == "new" && s.options[2] == "Text");
+    CHECK(s.selected == 1);
+    CHECK(s.text == "best");
+    CHECK(s.name == "sort");
+}
+
+void test_lists() {
+    Page pg = parse("<ul><li>one</li><li>two</li></ul>");
+    CHECK(countKind(pg, BlockKind::ListItem) == 2);
+}
+
+void test_comments_and_malformed() {
+    Page pg = parse("before <!-- a <b> comment --> after <div>unterminated");
+    CHECK(pg.blocks.size() == 2);
+    CHECK(pg.blocks[0].text == "before after");
+    CHECK(!pg.blocks[0].bold);
+}
+
+void test_theme_color() {
+    Page pg = parse("<html><head><meta name=\"theme-color\" content=\"#123456\"></head>"
+                    "<body bgcolor=\"#654321\">x</body></html>");
+    CHECK(pg.bg == 0x654321u); // body processed after meta, overwrites
+}
+
+void test_chunked_feed() {
+    std::string html = "<div><a href=\"/a\">link <b>bold</b> tail</a><p>next</p></div>";
+    html::Parser p;
+    // feed in awkward 3-byte chunks, splitting mid-entity/mid-tag
+    std::string html2 = html + "<p>&amp;&#97;</p>";
+    p.feed(html2.data(), html2.size());
+    p.finish();
+    const Page& pg = p.page();
+    CHECK(countKind(pg, BlockKind::Link) == 1);
+    CHECK(pg.blocks[0].text == "link bold tail");
+    CHECK(pg.blocks.back().text == "&a");
+}
+
+void test_fixture(const std::string& path) {
+    std::string html = slurp(path);
+    if (html.empty()) { printf("FAIL cannot read %s\n", path.c_str()); failures++; return; }
+    html::Parser p;
+    p.feed(html.data(), html.size());
+    p.finish();
+    CHECK(p.page().blocks.size() > 0);
+}
+
+// ---------------- CLI dump ----------------
+
+static void dump(const Page& pg) {
+    printf("title: %s\nbg: #%06x\nblocks: %zu\n", pg.title.c_str(), pg.bg, pg.blocks.size());
+    for (size_t i = 0; i < pg.blocks.size(); i++) {
+        const Block& b = pg.blocks[i];
+        const char* k = "?";
+        switch (b.kind) {
+            case BlockKind::Text: k = "text"; break;
+            case BlockKind::Heading: k = "heading"; break;
+            case BlockKind::Link: k = "link"; break;
+            case BlockKind::Button: k = "button"; break;
+            case BlockKind::Input: k = "input"; break;
+            case BlockKind::ListItem: k = "list"; break;
+            case BlockKind::Table: k = "table"; break;
+            case BlockKind::Select: k = "select"; break;
+        }
+        printf("[%zu] %s", i, k);
+        if (b.kind == BlockKind::Heading) printf(" h%d", b.level);
+        if (!b.href.empty()) printf(" href=%s", b.href.c_str());
+        if (!b.name.empty()) printf(" name=%s", b.name.c_str());
+        if (b.bold) printf(" bold");
+        if (b.italic) printf(" italic");
+        if (b.kind == BlockKind::Table) {
+            printf(" rows=%zu", b.rows.size());
+            for (size_t r = 0; r < b.rows.size() && r < 4; r++)
+                printf("\n      %s = %.80s", b.rows[r].k.c_str(), b.rows[r].v.c_str());
+            printf("\n");
+            continue;
+        }
+        if (b.kind == BlockKind::Select) {
+            printf(" sel=%zu opts=", b.selected);
+            for (auto& o : b.options) printf("[%s] ", o.c_str());
+            printf("\n");
+            continue;
+        }
+        printf(" | %.120s\n", b.text.c_str());
+    }
+}
+
+int main(int argc, char** argv) {
+    if (argc >= 2) {
+        const char* arg = argv[1];
+        std::string html;
+        if (strncmp(arg, "http", 4) == 0) {
+            // fetch via curl with a mobile-ish UA
+            char cmd[512];
+            snprintf(cmd, sizeof(cmd),
+                     "curl -sL --max-time 20 -A \"Mozilla/5.0 (Linux; Android 10; Lilka) "
+                     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36\" "
+                     "\"%s\" | head -c 400000", arg);
+            FILE* f = popen(cmd, "r");
+            if (!f) { printf("curl failed for %s\n", arg); return 2; }
+            char buf[8192];
+            size_t n;
+            while ((n = fread(buf, 1, sizeof(buf), f)) > 0) html.append(buf, n);
+            int rc = pclose(f);
+            if (rc != 0) { printf("curl failed for %s\n", arg); return 2; }
+        } else {
+            html = slurp(arg);
+        }
+        if (html.empty()) { printf("empty input\n"); return 2; }
+        html::Parser p;
+        p.feed(html.data(), html.size());
+        p.finish();
+        dump(p.page());
+        return 0;
+    }
+
+    test_basics();
+    test_script_style_stripped();
+    test_noscript_rendered();
+    test_entities();
+    test_cyrillic();
+    test_inputs_forms();
+    test_tables();
+    test_select();
+    test_lists();
+    test_comments_and_malformed();
+    test_theme_color();
+    test_chunked_feed();
+
+    // fixtures
+    const char* fx[] = {
+        "tests/fixtures/simple.html",
+        "tests/fixtures/forms.html",
+        "tests/fixtures/messy.html",
+        "tests/fixtures/cyrillic.html",
+        "tests/fixtures/tables.html",
+    };
+    for (auto p : fx) test_fixture(p);
+
+    if (failures) {
+        printf("\n%d FAILURES\n", failures);
+        return 1;
+    }
+    printf("\nAll parser tests passed.\n");
+    return 0;
+}
