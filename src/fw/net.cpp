@@ -315,6 +315,7 @@ bool Client::open(const Url& u, int timeoutMs, WiFiClientSecure& client, std::st
             continue;
         }
         stage("tcp");
+        Serial.printf("[net] %s -> %s:%u\n", u.host.c_str(), ip.toString().c_str(), (unsigned)port);
         if (client.connect(ip, port, 15000)) {
             stage("tls");
             return true;
@@ -387,24 +388,29 @@ bool inflateBody(const std::string& raw, const std::string& encoding, std::strin
 
 bool Client::request(const Url& u, std::string& body, std::string& location,
                      std::string& err, int timeoutMs, const std::string& userAgent,
-                     int& status) {
+                     int& status, const std::string& method, const std::string& postBody) {
     WiFiClientSecure client;
     if (!open(u, timeoutMs, client, err)) return false;
 
     std::string cookieHdr = getCookieHeader(u.host);
-    std::string req = "GET " + u.path + " HTTP/1.1\r\n"
+    std::string req = method + " " + u.path + " HTTP/1.1\r\n"
                       "Host: " + u.host + "\r\n"
                       "User-Agent: " + userAgent + "\r\n"
                       "Accept: text/html,application/xhtml+xml;q=0.9,*/*;q=0.8\r\n"
                       "Accept-Encoding: gzip\r\n"
                       "Accept-Language: " + g_acceptLang + "\r\n" +
-                      (cookieHdr.empty() ? "" : ("Cookie: " + cookieHdr + "\r\n")) +
-                      "Connection: close\r\n\r\n";
+                      (cookieHdr.empty() ? "" : ("Cookie: " + cookieHdr + "\r\n"));
+    if (method == "POST" && !postBody.empty()) {
+        req += "Content-Type: application/x-www-form-urlencoded\r\n";
+        req += "Content-Length: " + std::to_string(postBody.size()) + "\r\n";
+    }
+    req += "Connection: close\r\n\r\n";
     if (!cookieHdr.empty()) {
         Serial.printf("[net] send cookie (%u chars)\n", (unsigned)cookieHdr.size());
     }
     stage("send");
     client.print(req.c_str());
+    if (method == "POST" && !postBody.empty()) client.print(postBody.c_str());
 
     std::string line;
     if (!readLine(client, line) || line.empty()) { err = "no response"; return false; }
@@ -585,6 +591,30 @@ bool Client::get(const std::string& url, std::string& outBody, std::string& outF
     }
     err = "too many redirects";
     return false;
+}
+
+bool Client::post(const std::string& url, const std::string& form,
+                  std::string& outBody, std::string& outFinalUrl, std::string& err,
+                  int timeoutMs, int maxRedirects, const std::string& userAgent) {
+    std::string cur = rewriteUrl(url);
+    Url u;
+    if (!parseUrl(cur, u)) { err = "bad url: " + url; return false; }
+    std::string body, location;
+    int status = 0;
+    if (!request(u, body, location, err, timeoutMs, userAgent, status, "POST", form)) return false;
+    if (status >= 300 && status < 400 && !location.empty()) {
+        // browser behavior: follow form redirects with GET
+        std::string follow = resolve(u, location);
+        Url probe;
+        if (!parseUrl(follow, probe)) { err = "bad redirect: " + follow; return false; }
+        Serial.printf("[net] post redirect -> %s\n", follow.c_str());
+        return get(follow, outBody, outFinalUrl, err, timeoutMs, maxRedirects, userAgent);
+    }
+    if (status != 200) { err = "http " + std::to_string(status); return false; }
+    stage("done");
+    outBody = std::move(body);
+    outFinalUrl = u.toString();
+    return true;
 }
 
 }  // namespace net

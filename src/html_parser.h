@@ -24,6 +24,7 @@ private:
         enum { None, Link, Button, Heading, ListItem, Select } kind;
         std::string href;
         std::string formMethod;
+        std::vector<std::pair<std::string, std::string>> formFields;
         std::string name;  // Select: form field name
         int level = 0;
         std::string text;  // accumulated inner text
@@ -52,6 +53,7 @@ private:
     bool titleDone_ = false;  // only the first <title> counts
     std::string formAction_;
     std::string formMethod_ = "GET";
+    std::vector<std::pair<std::string, std::string>> formHidden_;  // <input type=hidden> inside current form
     // table state
     bool inTable_ = false;
     std::vector<std::vector<std::string>> tableRows_;

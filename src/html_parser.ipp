@@ -278,6 +278,7 @@ void Parser::closeCtx() {
         blk.href = ctx_.href;
         blk.formAction = ctx_.href;
         blk.formMethod = ctx_.formMethod;
+        blk.formFields = ctx_.formFields;
         blk.level = ctx_.level;
         blk.name = ctx_.name;
         blk.options = ctx_.options;
@@ -411,6 +412,7 @@ void Parser::feed(const char* data, size_t len) {
                     cx.kind = Ctx::Button;
                     cx.href = formAction_;
                     cx.formMethod = formMethod_;
+                    cx.formFields = formHidden_;
                     openCtx(cx);
                     continue;
                 }
@@ -431,7 +433,14 @@ void Parser::feed(const char* data, size_t len) {
                     std::string type = attrValue(body, "type");
                     for (auto& ch : type) ch = (char)tolower((unsigned char)ch);
                     if (type.empty()) type = "text";
-                    if (type == "hidden" || type == "file" || type == "reset") continue;
+                    if (type == "hidden") {
+                        // keep for form submission (POST bodies, consent walls)
+                        std::string hn = unescapeAttr(attrValue(body, "name"));
+                        if (!hn.empty())
+                            formHidden_.emplace_back(hn, unescapeAttr(attrValue(body, "value")));
+                        continue;
+                    }
+                    if (type == "file" || type == "reset") continue;
                     if (type == "submit" || type == "button") {
                         flushText();
                         Block blk;
@@ -442,6 +451,7 @@ void Parser::feed(const char* data, size_t len) {
                         blk.href = formAction_;
                         blk.formAction = formAction_;
                         blk.formMethod = formMethod_;
+                        blk.formFields = formHidden_;
                         if (page_.blocks.size() < kMaxBlocks) page_.blocks.push_back(std::move(blk));
                         continue;
                     }
@@ -453,6 +463,7 @@ void Parser::feed(const char* data, size_t len) {
                     if (blk.placeholder.empty()) blk.placeholder = blk.name;
                     blk.formAction = formAction_;
                     blk.formMethod = formMethod_;
+                    blk.formFields = formHidden_;
                     if (page_.blocks.size() < kMaxBlocks) page_.blocks.push_back(std::move(blk));
                     continue;
                 }
@@ -541,7 +552,7 @@ void Parser::feed(const char* data, size_t len) {
                 continue;
             }
             if (name == "title") { inTitle_ = false; titleDone_ = true; continue; }
-            if (name == "form") { formAction_ = ""; formMethod_ = "GET"; continue; }
+            if (name == "form") { formAction_ = ""; formMethod_ = "GET"; formHidden_.clear(); continue; }
             if (name == "b" || name == "strong") { bold_ = false; continue; }
             if (name == "i" || name == "em") { italic_ = false; continue; }
             if (name == "p" || name == "div" || name == "section" || name == "article" ||

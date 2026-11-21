@@ -2,6 +2,7 @@
 // A flat, vertically-ordered list of blocks. Platform independent.
 #pragma once
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace lilka {
@@ -30,6 +31,7 @@ struct Block {
     std::string placeholder; // Input
     std::string formAction;  // Button/Input submit target
     std::string formMethod;  // "GET" or "POST"
+    std::vector<std::pair<std::string, std::string>> formFields; // hidden inputs of the form
     int level = 0;           // Heading: 1..6
     bool bold = false;
     bool italic = false;

@@ -48,6 +48,8 @@ private:
     kb::Keyboard kb_;
     std::string inputPurpose_;   // "url" | field name
     std::string inputFormAction_;
+    std::string inputFormMethod_;
+    std::vector<std::pair<std::string, std::string>> inputFormFields_;
 
     // settings
     int fontScale_ = 1;         // 1 = 13px, 2 = 20px
@@ -60,6 +62,9 @@ private:
     bool clickable(int lineIdx) const;
     void buildLines();
     void navigate(const std::string& url);
+    void submitPost(const std::string& url, const std::vector<std::pair<std::string, std::string>>& fields,
+                    const std::string& extraName, const std::string& extraValue);
+    void finishLoad(const std::string& url, const std::string& html, const std::string& finalUrl);
 
     /// net::StageFn target — redraws the busy screen inline (fetch blocks the loop).
     void onStage(const char* s);

@@ -55,11 +55,21 @@ public:
              const std::string& userAgent =
                  "Lilka/1.0 (ESP32-S3; browser; +https://github.com/lilka-dev/lilka)");
 
+    /// POST `form` (application/x-www-form-urlencoded) to `url`.
+    /// Redirects are followed with GET (browser behavior for 301/302/303).
+    bool post(const std::string& url, const std::string& form,
+              std::string& outBody, std::string& outFinalUrl, std::string& err,
+              int timeoutMs = 15000, int maxRedirects = 5,
+              const std::string& userAgent =
+                  "Lilka/1.0 (ESP32-S3; browser; +https://github.com/lilka-dev/lilka)");
+
 private:
     bool open(const Url& u, int timeoutMs, WiFiClientSecure& client, std::string& err);
     /// One request: fills body (decoded), location header, status code; handles gzip.
+    /// `method` is "GET" or "POST"; `postBody` sent as-is for POST.
     bool request(const Url& u, std::string& body, std::string& location,
-                 std::string& err, int timeoutMs, const std::string& userAgent, int& status);
+                 std::string& err, int timeoutMs, const std::string& userAgent, int& status,
+                 const std::string& method = "GET", const std::string& postBody = "");
 };
 
 /// Progress/stage reporting: called with "dns", "tcp", "tls", "send",

@@ -170,6 +170,34 @@ void Browser::frameClickables(std::vector<int>& out) const {
     }
 }
 
+namespace {
+std::string urlenc(const std::string& s) {
+    static const char* hex = "0123456789ABCDEF";
+    std::string o;
+    for (unsigned char c : s) {
+        if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') o += (char)c;
+        else { o += '%'; o += hex[c >> 4]; o += hex[c & 15]; }
+    }
+    return o;
+}
+
+std::string formEncode(const std::vector<std::pair<std::string, std::string>>& fields,
+                       const std::string& extraName, const std::string& extraValue) {
+    std::string o;
+    for (const auto& kv : fields) {
+        if (!kv.first.empty()) {
+            if (!o.empty()) o += '&';
+            o += urlenc(kv.first) + "=" + urlenc(kv.second);
+        }
+    }
+    if (!extraName.empty()) {
+        if (!o.empty()) o += '&';
+        o += urlenc(extraName) + "=" + urlenc(extraValue);
+    }
+    return o;
+}
+}  // namespace
+
 void Browser::navigate(const std::string& urlIn) {
     std::string url = urlIn;
     while (!url.empty() && (unsigned char)url.back() < 32) url.pop_back();
@@ -181,16 +209,7 @@ void Browser::navigate(const std::string& urlIn) {
         url.find('.') == std::string::npos) {
         // bare word -> search. DuckDuckGo HTML endpoint: serves real results
         // to plain HTTP clients (Google's /search returns a JS/anti-bot page).
-        auto enc = [](const std::string& s) {
-            static const char* hex = "0123456789ABCDEF";
-            std::string o;
-            for (unsigned char c : s) {
-                if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') o += (char)c;
-                else { o += '%'; o += hex[c >> 4]; o += hex[c & 15]; }
-            }
-            return o;
-        };
-        url = "https://html.duckduckgo.com/html/?q=" + enc(url);
+        url = "https://html.duckduckgo.com/html/?q=" + urlenc(url);
     } else if (url.find("://") == std::string::npos) {
         url = "https://" + url;
     }
@@ -239,7 +258,10 @@ void Browser::navigate(const std::string& urlIn) {
         dirty_ = true;
         return;
     }
+    finishLoad(url, html, finalUrl);
+}
 
+void Browser::finishLoad(const std::string& url, const std::string& html, const std::string& finalUrl) {
     // parse
     Serial.printf("[nav] parsing...\n");
     lilka::html::Parser p;
@@ -255,6 +277,45 @@ void Browser::navigate(const std::string& urlIn) {
     mode_ = PAGE;
     buildLines();
     dirty_ = true;
+}
+
+void Browser::submitPost(const std::string& url,
+                         const std::vector<std::pair<std::string, std::string>>& fields,
+                         const std::string& extraName, const std::string& extraValue) {
+    std::string form = formEncode(fields, extraName, extraValue);
+    net::setStageFn([](const char* s) { g_browser.onStage(s); });
+    busyStage_ = "start";
+    busyUrl_ = url;
+    busyT0_ = millis();
+    mode_ = BUSY;
+    dirty_ = true;
+    renderBusy();
+    gfx_->flush();
+
+    std::string err, html, finalUrl;
+    std::string ssid, pass;
+    if (!net::wifiCreds(ssid, pass)) {
+        err = "no wifi creds (set up in Keira)";
+    } else if (WiFi.status() != WL_CONNECTED && !net::connect(ssid, pass, 20000)) {
+        err = "wifi connect failed";
+    } else {
+        Serial.printf("[nav] POST %s (%u bytes)\n", url.c_str(), (unsigned)form.size());
+        net::Client c;
+        if (!c.post(url, form, html, finalUrl, err)) {
+            Serial.printf("[nav] POST failed: %s\n", err.c_str());
+        } else {
+            Serial.printf("[nav] got %u bytes, final %s\n", (unsigned)html.size(), finalUrl.c_str());
+            store::cachePut(finalUrl, html);
+        }
+    }
+    if (!err.empty()) {
+        errText_ = err;
+        Serial.printf("[nav] ERROR: %s\n", err.c_str());
+        mode_ = ERROR;
+        dirty_ = true;
+        return;
+    }
+    finishLoad(url, html, finalUrl);
 }
 
 void Browser::serialCmd(const std::string& in) {
@@ -280,6 +341,42 @@ void Browser::serialCmd(const std::string& in) {
         else if (k == "select") key = Buttons::SELECT;
         else if (k == "start") key = Buttons::START;
         if (key < Buttons::COUNT) { btns_->inject(key); Serial.printf("[cmd] injected %s\n", k.c_str()); }
+        return;
+    }
+    if (line.rfind("click", 0) == 0) {
+        int n = atoi(line.c_str() + 6);
+        if (n >= 0 && n < (int)lines_.size()) {
+            lineCursor_ = n;
+            activate(n);
+        } else {
+            Serial.printf("[cmd] bad line %d\n", n);
+        }
+        return;
+    }
+    if (line.rfind("cursor", 0) == 0) {
+        lineCursor_ = atoi(line.c_str() + 7);
+        dirty_ = true;
+        Serial.printf("[cmd] cursor -> %d\n", lineCursor_);
+        return;
+    }
+    if (line.rfind("find", 0) == 0) {
+        // find <text> -> list matching line numbers (case-insensitive)
+        std::string needle = line.substr(5);
+        while (!needle.empty() && needle.front() == ' ') needle.erase(needle.begin());
+        bool found = false;
+        auto fold = [](std::string& s) {  // ASCII-only: tolower() corrupts UTF-8
+            for (auto& ch : s) if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+        };
+        for (int i = 0; i < (int)lines_.size(); i++) {
+            std::string t = lines_[i].text;
+            std::string n2 = needle;
+            fold(t); fold(n2);
+            if (t.find(n2) != std::string::npos) {
+                Serial.printf("[cmd] found line %d: '%s'\n", i, lines_[i].text.c_str());
+                found = true;
+            }
+        }
+        if (!found) Serial.printf("[cmd] not found: %s\n", needle.c_str());
         else Serial.println("unknown key");
         return;
     }
@@ -422,11 +519,14 @@ void Browser::activate(int lineIdx) {
                 net::Url u;
                 if (net::parseUrl(currentUrl_, u)) target = net::resolve(u, target);
             }
-            navigate(target);
+            if (b.formMethod == "POST") submitPost(target, b.formFields, b.name, b.text);
+            else navigate(target);
         }
     } else if (b.kind == BlockKind::Input) {
         inputPurpose_ = b.name.empty() ? b.placeholder : b.name;
         inputFormAction_ = b.formAction;
+        inputFormMethod_ = b.formMethod;
+        inputFormFields_ = b.formFields;
         kb_.reset();
         inputFrom_ = PAGE;
         mode_ = INPUTMODE;
@@ -480,12 +580,14 @@ bool Browser::loop() {
                     if (!cl.empty()) { sel_ = cl[0]; activate(sel_); }
                 }
             } else if (just(Buttons::A)) {
-                // A acts on the element under the cursor: input -> keyboard,
-                // select -> cycle option. Text blocks have no action.
+                // A = primary action on the element under the cursor:
+                // link/button -> activate, input -> keyboard, select -> cycle.
                 int bi = lines_[lineCursor_].block;
                 if (bi >= 0 && bi < (int)page_.blocks.size()) {
                     auto& blk = page_.blocks[bi];
-                    if (blk.kind == BlockKind::Input) {
+                    if (blk.kind == BlockKind::Link || blk.kind == BlockKind::Button) {
+                        activate(lineCursor_);
+                    } else if (blk.kind == BlockKind::Input) {
                         activate(lineCursor_);
                     } else if (blk.kind == BlockKind::Select && !blk.options.empty()) {
                         blk.selected = (blk.selected + 1) % blk.options.size();
@@ -592,18 +694,12 @@ bool Browser::loop() {
                         net::Url u;
                         if (net::parseUrl(currentUrl_, u)) action = net::resolve(u, action);
                     }
-                    auto enc = [](const std::string& s) {
-                        static const char* hex = "0123456789ABCDEF";
-                        std::string o;
-                        for (unsigned char c : s) {
-                            if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~' ||
-                                c == '=' || c == '&' || c == '?') o += (char)c;
-                            else { o += '%'; o += hex[c >> 4]; o += hex[c & 15]; }
-                        }
-                        return o;
-                    };
-                    std::string sep = action.find('?') == std::string::npos ? "?" : "&";
-                    navigate(action + sep + enc(inputPurpose_) + "=" + enc(v));
+                    if (inputFormMethod_ == "POST") {
+                        submitPost(action, inputFormFields_, inputPurpose_, v);
+                    } else {
+                        std::string sep = action.find('?') == std::string::npos ? "?" : "&";
+                        navigate(action + sep + urlenc(inputPurpose_) + "=" + urlenc(v));
+                    }
                 }
             }
             act = true;
