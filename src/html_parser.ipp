@@ -14,6 +14,11 @@ const char* namedEntity(const char* s, size_t n) {
         {"mdash", 5, "\xE2\x80\x94"}, {"ndash", 5, "\xE2\x80\x93"},
         {"hellip", 6, "\xE2\x80\xA6"}, {"euro", 4, "\xE2\x82\xAC"},
         {"copy", 4, "\xC2\xA9"},
+        {"middot", 6, "\xC2\xB7"}, {"bull", 4, "\xE2\x80\xA2"},
+        {"trade", 5, "\xE2\x84\xA2"}, {"reg", 3, "\xC2\xAE"},
+        {"sect", 4, "\xC2\xA7"}, {"deg", 3, "\xC2\xB0"},
+        {"plusmn", 6, "\xC2\xB1"}, {"times", 5, "\xC3\x97"},
+        {"divide", 6, "\xC3\xB7"},
     };
     for (const auto& e : tbl)
         if (e.len == n && !std::memcmp(s, e.name, n)) return e.utf8;
@@ -60,21 +65,58 @@ std::string unescapeAttr(std::string v) {
 }
 
 std::string attrValue(const std::string& tag, const char* name) {
-    std::string needle = std::string(name) + "=";
-    size_t p = tag.find(needle);
-    if (p == std::string::npos) return "";
-    p += needle.size();
-    while (p < tag.size() && std::isspace((unsigned char)tag[p])) p++;
-    if (p >= tag.size()) return "";
-    char q = tag[p];
-    if (q == '"' || q == '\'') {
-        size_t e = tag.find(q, p + 1);
-        if (e == std::string::npos) return tag.substr(p + 1);
-        return tag.substr(p + 1, e - p - 1);
+    size_t nlen = std::strlen(name);
+    size_t i = 0;
+    while (i + nlen < tag.size()) {
+        bool match = true;
+        for (size_t k = 0; k < nlen; k++) {
+            if (std::tolower((unsigned char)tag[i + k]) != std::tolower((unsigned char)name[k])) {
+                match = false;
+                break;
+            }
+        }
+        if (match && (i == 0 || std::isspace((unsigned char)tag[i - 1]) || tag[i - 1] == '/')) {
+            size_t p = i + nlen;
+            while (p < tag.size() && std::isspace((unsigned char)tag[p])) p++;
+            if (p < tag.size() && tag[p] == '=') {
+                p++;
+                while (p < tag.size() && std::isspace((unsigned char)tag[p])) p++;
+                if (p >= tag.size()) return "";
+                char q = tag[p];
+                if (q == '"' || q == '\'') {
+                    size_t e = tag.find(q, p + 1);
+                    if (e == std::string::npos) return tag.substr(p + 1);
+                    return tag.substr(p + 1, e - p - 1);
+                }
+                size_t e = p;
+                while (e < tag.size() && !std::isspace((unsigned char)tag[e]) && tag[e] != '>') e++;
+                return tag.substr(p, e - p);
+            }
+        }
+        i++;
     }
-    size_t e = p;
-    while (e < tag.size() && !std::isspace((unsigned char)tag[e]) && tag[e] != '>') e++;
-    return tag.substr(p, e - p);
+    return "";
+}
+
+bool hasAttr(const std::string& tag, const char* name) {
+    size_t nlen = std::strlen(name);
+    size_t i = 0;
+    while (i + nlen <= tag.size()) {
+        bool match = true;
+        for (size_t k = 0; k < nlen; k++) {
+            if (std::tolower((unsigned char)tag[i + k]) != std::tolower((unsigned char)name[k])) {
+                match = false;
+                break;
+            }
+        }
+        if (match && (i == 0 || std::isspace((unsigned char)tag[i - 1]) || tag[i - 1] == '/')) {
+            size_t p = i + nlen;
+            if (p == tag.size() || std::isspace((unsigned char)tag[p]) || tag[p] == '=' || tag[p] == '>')
+                return true;
+        }
+        i++;
+    }
+    return false;
 }
 
 std::string trimCollapse(const std::string& in) {
@@ -156,7 +198,7 @@ void Parser::emitTable() {
 
 void Parser::entity(const char* src, size_t len, size_t& i) {
     // src[i] == '&'
-    if (i + 1 >= len) { pushChar('&'); return; }
+    if (i + 1 >= len) { pushChar('&'); i++; return; }
     if (src[i + 1] == '#') {
         unsigned code = 0;
         size_t j = i + 2;
@@ -173,7 +215,7 @@ void Parser::entity(const char* src, size_t len, size_t& i) {
             j++;
             digits++;
         }
-        if (digits == 0) { pushChar('&'); return; }
+        if (digits == 0) { pushChar('&'); i++; return; }
         if (code >= 0x20) {
             if (ctx_.kind != Ctx::None) appendUtf8(ctx_.text, code);
             else appendUtf8(text_, code);
@@ -188,11 +230,14 @@ void Parser::entity(const char* src, size_t len, size_t& i) {
         if (r) {
             if (ctx_.kind != Ctx::None) ctx_.text.append(r);
             else text_.append(r);
-            i = j + 1;
-            return;
+        } else {
+            pushChar('&');
         }
+        i = j + 1;
+        return;
     }
     pushChar('&');
+    i++;
 }
 
 void Parser::flushText() {
@@ -231,6 +276,8 @@ void Parser::closeCtx() {
         }
         blk.text = std::move(t);
         blk.href = ctx_.href;
+        blk.formAction = ctx_.href;
+        blk.formMethod = ctx_.formMethod;
         blk.level = ctx_.level;
         blk.name = ctx_.name;
         blk.options = ctx_.options;
@@ -323,7 +370,7 @@ void Parser::feed(const char* data, size_t len) {
                 k++;
             }
             if (k >= len) { pushChar('<'); i++; continue; }  // tag spans chunk
-            std::string body = tagLower(data + j, k - j);
+            std::string body(data + j, k - j);
             i = k + 1;
 
             if (!closing) {
@@ -363,6 +410,7 @@ void Parser::feed(const char* data, size_t len) {
                     Ctx cx;
                     cx.kind = Ctx::Button;
                     cx.href = formAction_;
+                    cx.formMethod = formMethod_;
                     openCtx(cx);
                     continue;
                 }
@@ -381,9 +429,22 @@ void Parser::feed(const char* data, size_t len) {
                 }
                 if (name == "input") {
                     std::string type = attrValue(body, "type");
+                    for (auto& ch : type) ch = (char)tolower((unsigned char)ch);
                     if (type.empty()) type = "text";
-                    if (type == "hidden" || type == "file" || type == "submit" ||
-                        type == "button" || type == "reset") continue;
+                    if (type == "hidden" || type == "file" || type == "reset") continue;
+                    if (type == "submit" || type == "button") {
+                        flushText();
+                        Block blk;
+                        blk.kind = BlockKind::Button;
+                        std::string val = attrValue(body, "value");
+                        blk.text = val.empty() ? (type == "submit" ? "Submit" : "Button") : val;
+                        blk.name = attrValue(body, "name");
+                        blk.href = formAction_;
+                        blk.formAction = formAction_;
+                        blk.formMethod = formMethod_;
+                        if (page_.blocks.size() < kMaxBlocks) page_.blocks.push_back(std::move(blk));
+                        continue;
+                    }
                     flushText();
                     Block blk;
                     blk.kind = BlockKind::Input;
@@ -391,11 +452,15 @@ void Parser::feed(const char* data, size_t len) {
                     blk.placeholder = attrValue(body, "placeholder");
                     if (blk.placeholder.empty()) blk.placeholder = blk.name;
                     blk.formAction = formAction_;
+                    blk.formMethod = formMethod_;
                     if (page_.blocks.size() < kMaxBlocks) page_.blocks.push_back(std::move(blk));
                     continue;
                 }
                 if (name == "form") {
                     formAction_ = unescapeAttr(attrValue(body, "action"));
+                    std::string m = attrValue(body, "method");
+                    for (auto& c : m) c = (char)toupper((unsigned char)c);
+                    formMethod_ = (m == "POST") ? "POST" : "GET";
                     continue;
                 }
                 if (name == "table") {
@@ -420,7 +485,7 @@ void Parser::feed(const char* data, size_t len) {
                 if (name == "option" && ctx_.kind == Ctx::Select) {
                     ctx_.text.clear();  // restart per-option text accumulation
                     std::string v = attrValue(body, "value");
-                    bool sel = body.find("selected") != std::string::npos;
+                    bool sel = hasAttr(body, "selected");
                     if (!v.empty()) {
                         ctx_.options.push_back(v);
                         if (sel) ctx_.selected = ctx_.options.size() - 1;
@@ -476,7 +541,7 @@ void Parser::feed(const char* data, size_t len) {
                 continue;
             }
             if (name == "title") { inTitle_ = false; titleDone_ = true; continue; }
-            if (name == "form") { formAction_ = ""; continue; }
+            if (name == "form") { formAction_ = ""; formMethod_ = "GET"; continue; }
             if (name == "b" || name == "strong") { bold_ = false; continue; }
             if (name == "i" || name == "em") { italic_ = false; continue; }
             if (name == "p" || name == "div" || name == "section" || name == "article" ||

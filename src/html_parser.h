@@ -23,6 +23,7 @@ private:
     struct Ctx {           // open element state (a/button/h*/li/select)
         enum { None, Link, Button, Heading, ListItem, Select } kind;
         std::string href;
+        std::string formMethod;
         std::string name;  // Select: form field name
         int level = 0;
         std::string text;  // accumulated inner text
@@ -50,6 +51,7 @@ private:
     bool inComment_ = false;
     bool titleDone_ = false;  // only the first <title> counts
     std::string formAction_;
+    std::string formMethod_ = "GET";
     // table state
     bool inTable_ = false;
     std::vector<std::vector<std::string>> tableRows_;

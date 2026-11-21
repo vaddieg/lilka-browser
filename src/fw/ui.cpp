@@ -22,7 +22,7 @@ const uint16_t C_LINK = 0x7CFF;      // cyan-ish for links
 const uint16_t C_DIM = 0x841C;
 
 
-void wrapWords(const std::string& text, int16_t maxW, std::vector<std::string>& out) {
+void wrapWords(const std::string& text, int16_t maxW, std::vector<std::string>& out, uint8_t scale = 1) {
     std::string cur;
     auto push = [&]() { if (!cur.empty()) out.push_back(cur); cur.clear(); };
     size_t i = 0;
@@ -32,12 +32,12 @@ void wrapWords(const std::string& text, int16_t maxW, std::vector<std::string>& 
         if (word.empty()) { i = (sp == std::string::npos) ? text.size() : sp + 1; continue; }
         if (!cur.empty()) {
             std::string probe = cur + " " + word;
-            if (font::width(probe.c_str(), 1) <= maxW) { cur = probe; }
+            if (font::width(probe.c_str(), scale) <= maxW) { cur = probe; }
             else { push(); cur = word; }
         } else {
-            if (font::width(word.c_str(), 1) > maxW) {
+            if (font::width(word.c_str(), scale) > maxW) {
                 // hard-break long word
-                cur = font::fit(word.c_str(), maxW, 1);
+                cur = font::fit(word.c_str(), maxW, scale);
                 push();
                 // drop the fitted remainder (rare on this screen)
             } else {
@@ -53,6 +53,21 @@ void wrapWords(const std::string& text, int16_t maxW, std::vector<std::string>& 
 void Browser::setButtons(Buttons* b) { btns_ = b; }
 
 int Browser::lineH() const { return fontScale_ >= 2 ? 22 : 15; }
+
+uint8_t Browser::lineScale(int lineIdx) const {
+    if (fontScale_ >= 2) return 2;
+    if (lineIdx >= 0 && lineIdx < (int)lines_.size()) {
+        int bi = lines_[lineIdx].block;
+        if (bi >= 0 && bi < (int)page_.blocks.size()) {
+            if (page_.blocks[bi].kind == BlockKind::Heading) return 2;
+        }
+    }
+    return 1;
+}
+
+int Browser::lineH(int lineIdx) const {
+    return lineScale(lineIdx) >= 2 ? 22 : 15;
+}
 
 // Recent sites: saved history; if empty, a small built-in starter list.
 std::vector<std::string> Browser::recentList() const {
@@ -95,15 +110,20 @@ void Browser::buildLines() {
         const auto& b = page_.blocks[i];
         char buf[64];
         switch (b.kind) {
-            case BlockKind::Heading:
-                lines_.push_back({i, std::string(b.text), false});
+            case BlockKind::Heading: {
+                uint8_t hscale = (fontScale_ >= 2 || b.level <= 4) ? 2 : 1;
+                std::vector<std::string> ws;
+                wrapWords(b.text, maxW, ws, hscale);
+                for (auto& w : ws) lines_.push_back({i, w, false});
                 break;
+            }
             case BlockKind::Text:
             case BlockKind::ListItem: {
                 // full text, no expand/collapse (A had no focusable target anyway)
+                uint8_t tscale = fontScale_ >= 2 ? 2 : 1;
                 std::string prefix = (b.kind == BlockKind::ListItem) ? std::string("- ") : "";
                 std::vector<std::string> ws;
-                wrapWords(prefix + b.text, maxW, ws);
+                wrapWords(prefix + b.text, maxW, ws, tscale);
                 for (auto& w : ws) lines_.push_back({i, w, false});
                 break;
             }
@@ -141,9 +161,13 @@ void Browser::buildLines() {
 
 void Browser::frameClickables(std::vector<int>& out) const {
     out.clear();
-    int vis = (gfx_->height() - kHeaderH - kFooterH) / lineH();
-    for (int i = lineCursor_; i < lineCursor_ + vis && i < (int)lines_.size(); i++)
+    int y = kHeaderH + 4;
+    for (int i = lineCursor_; i < (int)lines_.size(); i++) {
+        int lh = lineH(i);
+        if (y + lh > gfx_->height() - kFooterH) break;
         if (clickable(i)) out.push_back(i);
+        y += lh;
+    }
 }
 
 void Browser::navigate(const std::string& urlIn) {
@@ -151,6 +175,7 @@ void Browser::navigate(const std::string& urlIn) {
     while (!url.empty() && (unsigned char)url.back() < 32) url.pop_back();
     while (!url.empty() && (unsigned char)url.front() < 32) url.erase(url.begin());
     if (url.empty()) return;
+    url = net::rewriteUrl(url);
     Serial.printf("[nav] navigate: %s\n", url.c_str());
     if (url.find("://") == std::string::npos && url.find('/') == std::string::npos &&
         url.find('.') == std::string::npos) {
@@ -277,6 +302,14 @@ void Browser::serialCmd(const std::string& in) {
         return;
     }
     if (line == "err") { Serial.printf("err: %s\n", errText_.c_str()); return; }
+    if (line == "cookies") {
+        Serial.printf("COOKIES (%u):\n%s", (unsigned)net::cookieCount(), net::dumpCookies().c_str());
+        return;
+    }
+    if (line == "clearcookies") {
+        net::clearCookies();
+        return;
+    }
     if (line == "lines") {
         for (int i = 0; i < (int)lines_.size(); i++) {
             const auto& L = lines_[i];
@@ -383,7 +416,14 @@ void Browser::activate(int lineIdx) {
         }
         navigate(target);
     } else if (b.kind == BlockKind::Button) {
-        if (!b.href.empty()) navigate(b.href);
+        std::string target = b.href.empty() ? b.formAction : b.href;
+        if (!target.empty()) {
+            if (target[0] == '/' || (target[0] == '.' && target[1] == '/')) {
+                net::Url u;
+                if (net::parseUrl(currentUrl_, u)) target = net::resolve(u, target);
+            }
+            navigate(target);
+        }
     } else if (b.kind == BlockKind::Input) {
         inputPurpose_ = b.name.empty() ? b.placeholder : b.name;
         inputFormAction_ = b.formAction;
@@ -489,6 +529,7 @@ bool Browser::loop() {
                 if (linklistSel_ == 0) {
                     fontScale_ = fontScale_ == 1 ? 2 : 1;
                     store::set("font", fontScale_ == 1 ? "1" : "2");
+                    buildLines();
                 } else if (linklistSel_ == 1) {
                     store::set("cache", store::get("cache", "1") == "1" ? "0" : "1");
                 } else if (linklistSel_ == 2) {
@@ -640,8 +681,10 @@ void Browser::renderPage() {
 
     int y = kHeaderH + 4;
     int vis = 0;
-    for (int i = lineCursor_; i < (int)lines_.size() && y + lineH() <= gfx_->height() - kFooterH;
-         i++, y += lineH(), vis++) {
+    for (int i = lineCursor_; i < (int)lines_.size(); i++) {
+        int lh = lineH(i);
+        if (y + lh > gfx_->height() - kFooterH) break;
+        uint8_t scale = lineScale(i);
         const Line& l = lines_[i];
         uint16_t c = 0xFFFF;
         if (l.block >= 0 && l.block < (int)page_.blocks.size()) {
@@ -652,12 +695,14 @@ void Browser::renderPage() {
             if (k == BlockKind::Text && page_.blocks[l.block].bold) c = 0xFFFF;
         }
         if (i == sel_) {
-            gfx_->fillRect(0, y - 1, gfx_->width(), lineH(), 0x1B37);
-            gfx_->fillRect(0, y - 1, 3, lineH(), C_ACCENT);
+            gfx_->fillRect(0, y - 1, gfx_->width(), lh, 0x1B37);
+            gfx_->fillRect(0, y - 1, 3, lh, C_ACCENT);
         }
         std::string t = l.text;
         if (l.pseudo) c = C_DIM;
-        font::text(gfx_, (i == sel_ ? 8 : 4), y, font::fit(t.c_str(), gfx_->width() - 10, 1), c, 1);
+        font::text(gfx_, (i == sel_ ? 8 : 4), y, font::fit(t.c_str(), gfx_->width() - 10, scale), c, scale);
+        y += lh;
+        vis++;
     }
     if (page_.blocks.empty()) {
         font::text(gfx_, 10, 60, "Press C to open a page", C_DIM, 1);

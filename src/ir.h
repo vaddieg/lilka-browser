@@ -29,6 +29,7 @@ struct Block {
     std::string name;        // Input
     std::string placeholder; // Input
     std::string formAction;  // Button/Input submit target
+    std::string formMethod;  // "GET" or "POST"
     int level = 0;           // Heading: 1..6
     bool bold = false;
     bool italic = false;

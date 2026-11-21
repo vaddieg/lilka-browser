@@ -54,7 +54,9 @@ private:
 
     // derived
     int lineH() const;
-        std::vector<std::string> recentList() const;
+    int lineH(int lineIdx) const;
+    uint8_t lineScale(int lineIdx) const;
+    std::vector<std::string> recentList() const;
     bool clickable(int lineIdx) const;
     void buildLines();
     void navigate(const std::string& url);

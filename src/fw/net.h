@@ -1,12 +1,15 @@
 // HTTP/HTTPS client for the Lilka browser (ESP32-S3).
 // - GET with redirects (301/302/303/307/308), relative Location resolution
 // - gzip/deflate response decoding (miniz)
+// - session-only cookie jar
+// - URL rewrites for compatibility/lite pages (e.g. Google Search gbv=1)
 // - body buffered in PSRAM (std::string, allocator override)
 #pragma once
 #include <Arduino.h>
 #include <WiFiClientSecure.h>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace net {
 
@@ -21,6 +24,9 @@ struct Url {
 /// Parse an absolute URL. Returns false on garbage.
 bool parseUrl(const std::string& in, Url& out);
 
+/// Rewrite URLs for compatibility/lite modes (e.g. Google Search gbv=1).
+std::string rewriteUrl(const std::string& url);
+
 /// Decode a gzip/zlib body (miniz). Pass-through if not compressed.
 /// `encoding` is the Content-Encoding header value (may be empty).
 bool inflateBody(const std::string& raw, const std::string& encoding, std::string& out, std::string& err);
@@ -30,6 +36,14 @@ const std::string& lastRawBody();
 
 /// Resolve `ref` against `base` (RFC 3986-ish, no fragments).
 std::string resolve(const Url& base, const std::string& ref);
+
+// --- Session Cookie Jar ---
+void setCookie(const std::string& domain, const std::string& name, const std::string& value);
+std::string getCookieHeader(const std::string& host);
+void parseSetCookie(const std::string& host, const std::string& headerVal);
+void clearCookies();
+size_t cookieCount();
+std::string dumpCookies();
 
 class Client {
 public:

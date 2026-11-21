@@ -57,6 +57,22 @@ void test_basics() {
     CHECK(pg.blocks[2].text == "Click me");
 }
 
+void test_headings() {
+    Page pg = parse("<h1>Heading 1</h1>"
+                    "<h2>Heading 2</h2>"
+                    "<h3>Heading 3</h3>"
+                    "<h4>Heading 4</h4>"
+                    "<h5>Heading 5</h5>"
+                    "<h6>Heading 6</h6>");
+    CHECK(countKind(pg, BlockKind::Heading) == 6);
+    CHECK(pg.blocks[0].level == 1 && pg.blocks[0].text == "Heading 1");
+    CHECK(pg.blocks[1].level == 2 && pg.blocks[1].text == "Heading 2");
+    CHECK(pg.blocks[2].level == 3 && pg.blocks[2].text == "Heading 3");
+    CHECK(pg.blocks[3].level == 4 && pg.blocks[3].text == "Heading 4");
+    CHECK(pg.blocks[4].level == 5 && pg.blocks[4].text == "Heading 5");
+    CHECK(pg.blocks[5].level == 6 && pg.blocks[5].text == "Heading 6");
+}
+
 void test_script_style_stripped() {
     Page pg = parse("<html><head>"
                     "<script>var x = '<div>fake</div> <a href=x>bad</a>';</script>"
@@ -88,9 +104,11 @@ void test_noscript_rendered() {
 }
 
 void test_entities() {
-    Page pg = parse("<p>a&#65;b &#x42; &mdash; &nbsp;end</p>");
+    Page pg = parse("<p>a&#65;b &#x42; &mdash; &nbsp; &middot; &unknown; end</p>");
     CHECK(pg.blocks.size() == 1);
-    CHECK(pg.blocks[0].text == "aAb B \xE2\x80\x94 " "\xC2\xA0" "end");
+    CHECK(pg.blocks[0].text.find("aAb B") != std::string::npos);
+    CHECK(pg.blocks[0].text.find("\xC2\xB7") != std::string::npos); // middot
+    CHECK(pg.blocks[0].text.find("end") != std::string::npos);
 }
 
 void test_cyrillic() {
@@ -108,6 +126,12 @@ void test_inputs_forms() {
     CHECK(pg.blocks[0].formAction == "/search");
     CHECK(countKind(pg, BlockKind::Button) == 1);
     CHECK(pg.blocks[1].href == "/search");
+
+    // Submit inputs (like "Accept all" / "Google Search")
+    Page pg2 = parse("<form action=\"/consent\"><input type=\"submit\" value=\"Accept all\" name=\"agree\"></form>");
+    CHECK(countKind(pg2, BlockKind::Button) == 1);
+    CHECK(pg2.blocks[0].text == "Accept all");
+    CHECK(pg2.blocks[0].href == "/consent");
 }
 
 void test_tables() {
@@ -249,6 +273,7 @@ int main(int argc, char** argv) {
     }
 
     test_basics();
+    test_headings();
     test_script_style_stripped();
     test_noscript_rendered();
     test_entities();

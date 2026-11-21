@@ -66,6 +66,159 @@ std::string resolve(const Url& base, const std::string& ref) {
     return out;
 }
 
+std::string rewriteUrl(const std::string& in) {
+    Url u;
+    if (!parseUrl(in, u)) return in;
+
+    std::string h = u.host;
+    for (auto& c : h) c = (char)tolower((unsigned char)c);
+
+    // Google Search: append &gbv=1 for clean no-JS HTML results
+    bool isGoogle = (h == "google.com" || h == "www.google.com" ||
+                     h.find(".google.") != std::string::npos ||
+                     h.rfind("google.", 0) == 0);
+    if (isGoogle) {
+        if (u.path == "/search" || u.path.rfind("/search?", 0) == 0 || u.path.rfind("/search/", 0) == 0) {
+            if (u.path.find("gbv=") == std::string::npos) {
+                u.path += (u.path.find('?') == std::string::npos ? "?gbv=1" : "&gbv=1");
+                return u.toString();
+            }
+        }
+    }
+    return in;
+}
+
+// ---------------------------------------------------------------- cookies
+
+namespace {
+
+struct Cookie {
+    std::string domain;
+    std::string name;
+    std::string value;
+};
+
+std::vector<Cookie> g_cookies;
+constexpr size_t kMaxCookies = 30;
+
+bool domainMatches(const std::string& requestHost, const std::string& cookieDomain) {
+    if (requestHost == cookieDomain) return true;
+    if (requestHost.size() > cookieDomain.size()) {
+        size_t off = requestHost.size() - cookieDomain.size();
+        if (requestHost[off - 1] == '.' &&
+            requestHost.compare(off, cookieDomain.size(), cookieDomain) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
+void setCookie(const std::string& domain, const std::string& name, const std::string& value) {
+    if (name.empty()) return;
+    std::string d = domain;
+    for (auto& c : d) c = (char)tolower((unsigned char)c);
+    if (!d.empty() && d[0] == '.') d.erase(0, 1);
+
+    for (auto it = g_cookies.begin(); it != g_cookies.end(); ++it) {
+        if (it->domain == d && it->name == name) {
+            if (value.empty()) {
+                g_cookies.erase(it);
+                return;
+            }
+            it->value = value;
+            return;
+        }
+    }
+    if (value.empty()) return;
+    if (g_cookies.size() >= kMaxCookies) {
+        g_cookies.erase(g_cookies.begin());
+    }
+    g_cookies.push_back({d, name, value});
+    Serial.printf("[cookie] set %s on %s (total %u)\n", name.c_str(), d.c_str(), (unsigned)g_cookies.size());
+}
+
+std::string getCookieHeader(const std::string& host) {
+    std::string h = host;
+    for (auto& c : h) c = (char)tolower((unsigned char)c);
+    std::string out;
+    for (const auto& ck : g_cookies) {
+        if (domainMatches(h, ck.domain)) {
+            if (!out.empty()) out += "; ";
+            out += ck.name + "=" + ck.value;
+        }
+    }
+    return out;
+}
+
+void clearCookies() {
+    g_cookies.clear();
+    Serial.println("[cookie] cleared");
+}
+
+size_t cookieCount() {
+    return g_cookies.size();
+}
+
+std::string dumpCookies() {
+    std::string out;
+    for (const auto& ck : g_cookies) {
+        out += ck.domain + "\t" + ck.name + "=" + ck.value + "\n";
+    }
+    return out;
+}
+
+void parseSetCookie(const std::string& host, const std::string& v) {
+    if (v.empty()) return;
+    size_t semi = v.find(';');
+    std::string nv = (semi == std::string::npos) ? v : v.substr(0, semi);
+    size_t eq = nv.find('=');
+    if (eq == std::string::npos) return;
+    std::string name = nv.substr(0, eq);
+    std::string val = nv.substr(eq + 1);
+
+    size_t nb = name.find_first_not_of(" \t");
+    size_t ne = name.find_last_not_of(" \t");
+    if (nb == std::string::npos) return;
+    name = name.substr(nb, ne - nb + 1);
+
+    size_t vb = val.find_first_not_of(" \t");
+    size_t ve = val.find_last_not_of(" \t");
+    val = (vb == std::string::npos) ? "" : val.substr(vb, ve - vb + 1);
+
+    std::string domain;
+    if (semi != std::string::npos) {
+        std::string attrs = v.substr(semi + 1);
+        size_t p = 0;
+        while (p < attrs.size()) {
+            size_t nextSemi = attrs.find(';', p);
+            std::string attr = (nextSemi == std::string::npos) ? attrs.substr(p) : attrs.substr(p, nextSemi - p);
+            size_t aeq = attr.find('=');
+            if (aeq != std::string::npos) {
+                std::string ak = attr.substr(0, aeq);
+                std::string av = attr.substr(aeq + 1);
+                size_t akb = ak.find_first_not_of(" \t");
+                size_t ake = ak.find_last_not_of(" \t");
+                if (akb != std::string::npos) ak = ak.substr(akb, ake - akb + 1);
+                for (auto& c : ak) c = (char)tolower((unsigned char)c);
+                if (ak == "domain") {
+                    size_t avb = av.find_first_not_of(" \t");
+                    size_t ave = av.find_last_not_of(" \t");
+                    if (avb != std::string::npos) domain = av.substr(avb, ave - avb + 1);
+                } else if (ak == "max-age") {
+                    long ma = strtol(av.c_str(), nullptr, 10);
+                    if (ma <= 0) val.clear();
+                }
+            }
+            if (nextSemi == std::string::npos) break;
+            p = nextSemi + 1;
+        }
+    }
+    if (domain.empty()) domain = host;
+    setCookie(domain, name, val);
+}
+
 // ---------------------------------------------------------------- wifi
 
 namespace {
@@ -238,13 +391,18 @@ bool Client::request(const Url& u, std::string& body, std::string& location,
     WiFiClientSecure client;
     if (!open(u, timeoutMs, client, err)) return false;
 
+    std::string cookieHdr = getCookieHeader(u.host);
     std::string req = "GET " + u.path + " HTTP/1.1\r\n"
                       "Host: " + u.host + "\r\n"
                       "User-Agent: " + userAgent + "\r\n"
                       "Accept: text/html,application/xhtml+xml;q=0.9,*/*;q=0.8\r\n"
                       "Accept-Encoding: gzip\r\n"
-                      "Accept-Language: " + g_acceptLang + "\r\n"
+                      "Accept-Language: " + g_acceptLang + "\r\n" +
+                      (cookieHdr.empty() ? "" : ("Cookie: " + cookieHdr + "\r\n")) +
                       "Connection: close\r\n\r\n";
+    if (!cookieHdr.empty()) {
+        Serial.printf("[net] send cookie (%u chars)\n", (unsigned)cookieHdr.size());
+    }
     stage("send");
     client.print(req.c_str());
 
@@ -268,7 +426,10 @@ bool Client::request(const Url& u, std::string& body, std::string& location,
         for (auto& ch : k) ch = (char)tolower((unsigned char)ch);
         size_t vs = v.find_first_not_of(" \t");
         if (vs != std::string::npos) v = v.substr(vs);
-        if (k == "location") {
+        if (k == "set-cookie") {
+            parseSetCookie(u.host, v);
+        }
+        else if (k == "location") {
             // Some servers (yes, Google) emit invalid chars in Location;
             // strip anything that can't be in a URL.
             std::string clean;
@@ -351,7 +512,7 @@ bool Client::request(const Url& u, std::string& body, std::string& location,
 
 bool Client::get(const std::string& url, std::string& outBody, std::string& outFinalUrl,
                  std::string& err, int timeoutMs, int maxRedirects, const std::string& userAgent) {
-    std::string cur = url;
+    std::string cur = rewriteUrl(url);
     for (int i = 0; i <= maxRedirects; i++) {
         Url u;
         if (!parseUrl(cur, u)) { err = "bad url: " + url; return false; }
@@ -411,6 +572,7 @@ bool Client::get(const std::string& url, std::string& outBody, std::string& outF
                         cur = cur.substr(at);
                 }
             }
+            cur = rewriteUrl(cur);
             Serial.printf("[net] redirect -> %s\n", cur.c_str());
             if (!parseUrl(cur, probe)) { err = "bad redirect: " + cur; return false; }
             continue;
