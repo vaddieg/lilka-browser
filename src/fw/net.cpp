@@ -1,5 +1,6 @@
 #include "net.h"
 #include "miniz.h"
+#include "store.h"
 #include <Preferences.h>
 #include <WiFi.h>
 #include <cstring>
@@ -90,8 +91,6 @@ std::string rewriteUrl(const std::string& in) {
 
 // ---------------------------------------------------------------- cookies
 
-namespace {
-
 struct Cookie {
     std::string domain;
     std::string name;
@@ -100,6 +99,23 @@ struct Cookie {
 
 std::vector<Cookie> g_cookies;
 constexpr size_t kMaxCookies = 30;
+
+void loadCookieJar() {
+    std::vector<std::string> rows;
+    if (!store::cookiesLoad(rows)) return;
+    for (auto& row : rows) {
+        size_t tab = row.find('\t');
+        size_t eq = row.find('=');
+        if (tab == std::string::npos || eq == std::string::npos || eq < tab) continue;
+        std::string domain = row.substr(0, tab);
+        std::string name = row.substr(tab + 1, eq - tab - 1);
+        std::string value = row.substr(eq + 1);
+        if (g_cookies.size() >= kMaxCookies) break;
+        g_cookies.push_back({domain, name, value});
+    }
+    if (!g_cookies.empty())
+        Serial.printf("[cookie] loaded %u from SD\n", (unsigned)g_cookies.size());
+}
 
 bool domainMatches(const std::string& requestHost, const std::string& cookieDomain) {
     if (requestHost == cookieDomain) return true;
@@ -113,7 +129,12 @@ bool domainMatches(const std::string& requestHost, const std::string& cookieDoma
     return false;
 }
 
-}  // namespace
+void saveCookieJar() {
+    std::vector<std::string> rows;
+    for (const auto& ck : g_cookies)
+        rows.push_back(ck.domain + "\t" + ck.name + "=" + ck.value);
+    store::cookiesSave(rows);
+}
 
 void setCookie(const std::string& domain, const std::string& name, const std::string& value) {
     if (name.empty()) return;
@@ -125,17 +146,19 @@ void setCookie(const std::string& domain, const std::string& name, const std::st
         if (it->domain == d && it->name == name) {
             if (value.empty()) {
                 g_cookies.erase(it);
-                return;
+            } else {
+                it->value = value;
             }
-            it->value = value;
+            saveCookieJar();
             return;
         }
     }
-    if (value.empty()) return;
+    if (value.empty()) { saveCookieJar(); return; }
     if (g_cookies.size() >= kMaxCookies) {
         g_cookies.erase(g_cookies.begin());
     }
     g_cookies.push_back({d, name, value});
+    saveCookieJar();
     Serial.printf("[cookie] set %s on %s (total %u)\n", name.c_str(), d.c_str(), (unsigned)g_cookies.size());
 }
 
@@ -154,6 +177,7 @@ std::string getCookieHeader(const std::string& host) {
 
 void clearCookies() {
     g_cookies.clear();
+    store::cookiesClear();
     Serial.println("[cookie] cleared");
 }
 

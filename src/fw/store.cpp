@@ -124,4 +124,35 @@ bool cacheGet(const std::string& url, std::string& html) {
     return !html.empty();
 }
 
+namespace {
+constexpr const char* kCookies = "/browser/cookies.txt";
+}
+
+bool cookiesLoad(std::vector<std::string>& rows) {
+    rows.clear();
+    File f = SD.open(kCookies, FILE_READ);
+    if (!f) return false;
+    std::string line;
+    while (f.available()) {
+        line.clear();
+        char c;
+        while (f.readBytes(&c, 1) && c != '\n') line += c;
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+        if (!line.empty()) rows.push_back(line);
+    }
+    f.close();
+    return true;
+}
+
+void cookiesSave(const std::vector<std::string>& rows) {
+    File f = SD.open(kCookies, FILE_WRITE);
+    if (!f) return;
+    for (auto& r : rows) { f.print(r.c_str()); f.println(); }
+    f.close();
+}
+
+void cookiesClear() {
+    if (SD.exists(kCookies)) SD.remove(kCookies);
+}
+
 }  // namespace store

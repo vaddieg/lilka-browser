@@ -22,4 +22,9 @@ std::vector<std::string> urls(int max = 10);
 bool cachePut(const std::string& url, const std::string& html);
 bool cacheGet(const std::string& url, std::string& html);
 
+/// Cookie jar persistence: /browser/cookies.txt (domain<TAB>name=value per line).
+bool cookiesLoad(std::vector<std::string>& rows);
+void cookiesSave(const std::vector<std::string>& rows);
+void cookiesClear();
+
 }  // namespace store

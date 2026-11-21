@@ -42,6 +42,7 @@ void setCookie(const std::string& domain, const std::string& name, const std::st
 std::string getCookieHeader(const std::string& host);
 void parseSetCookie(const std::string& host, const std::string& headerVal);
 void clearCookies();
+void loadCookieJar();   // call after store::begin()
 size_t cookieCount();
 std::string dumpCookies();
 

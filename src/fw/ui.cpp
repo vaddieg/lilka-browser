@@ -87,6 +87,7 @@ bool Browser::begin(Arduino_GFX* gfx) {
     font::begin(gfx);
     if (store::begin()) {
         if (store::get("font", "1") == "2") fontScale_ = 2;
+        net::loadCookieJar();
     }
     history_.push_back("");  // home slot
     currentUrl_ = "";
