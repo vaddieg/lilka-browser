@@ -773,22 +773,25 @@ void Browser::goBack() {
     history_.pop_back();
     currentUrl_ = history_.back();
     Serial.printf("[nav] back -> %s (hist=%u)\n", currentUrl_.c_str(), (unsigned)history_.size());
-    {
-        if (currentUrl_.empty()) {
-            page_.blocks.clear();
-            buildLines();
-        } else {
-            std::string html;
-            if (store::cacheGet(currentUrl_, html)) {
-                lilka::html::Parser p;
-                p.feed(html.data(), html.size());
-                p.finish();
-                page_ = std::move(p.page());
-                buildLines();
-            } else {
-                navigate(currentUrl_);
-            }
-        }
+    if (currentUrl_.empty()) {
+        page_.blocks.clear();
+        buildLines();
+        mode_ = PAGE;        // leave ERROR/wherever we were — B must visibly work
+        dirty_ = true;
+        return;
+    }
+    std::string html;
+    if (store::cacheGet(currentUrl_, html)) {
+        lilka::html::Parser p;
+        p.feed(html.data(), html.size());
+        p.finish();
+        page_ = std::move(p.page());
+        buildLines();
+        mode_ = PAGE;
+        lineCursor_ = 0;
+        dirty_ = true;
+    } else {
+        navigate(currentUrl_);   // sets BUSY -> PAGE/ERROR itself
     }
 }
 
@@ -1053,6 +1056,10 @@ bool Browser::loop() {
                 if (mode_ == ERROR && history_.size() > 1) goBack();
                 else { mode_ = PAGE; }
                 act = true;
+            } else if (just(Buttons::C) && mode_ == ERROR) {
+                mode_ = QUICKSTART; linklistSel_ = 0; act = true;
+            } else if (just(Buttons::D) && mode_ == ERROR) {
+                mode_ = SETTINGS; linklistSel_ = 0; act = true;
             }
             break;
         }
@@ -1267,7 +1274,7 @@ void Browser::renderError() {
         font::text(gfx_, 8, y, font::fit(w.c_str(), gfx_->width() - 12, 1), 0xFFFF, 1);
         y += lineH();
     }
-    font::text(gfx_, 4, gfx_->height() - kFooterH + 1, "B=back", C_DIM, 1);
+    font::text(gfx_, 4, gfx_->height() - kFooterH + 1, "B=back C=home D=settings", C_DIM, 1);
 }
 
 }  // namespace ui
