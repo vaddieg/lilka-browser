@@ -137,7 +137,7 @@ std::vector<std::string> urls(int max) {
 }
 
 bool cachePut(const std::string& url, const std::string& html) {
-    if (html.size() > 256 * 1024) return false;  // don't bloat the card
+    if (html.size() > 200 * 1024) return false;  // don't bloat the card
     std::string path = std::string("/browser/cache/") + hashOf(url) + ".html";
     File f = SD.open(path.c_str(), FILE_WRITE);
     if (!f) return false;

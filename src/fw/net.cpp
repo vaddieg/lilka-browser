@@ -362,13 +362,15 @@ bool inflateBody(const std::string& raw, const std::string& encoding, std::strin
     bool isGzip = raw.size() >= 2 && (unsigned char)raw[0] == 0x1f && (unsigned char)raw[1] == 0x8b;
     bool isZlib = raw.size() >= 2 && (unsigned char)raw[0] == 0x78;
     if (!((wantGzip && (isGzip || isZlib)) || isGzip)) {
-        out = raw;
+        out = std::move(raw);
         return true;
     }
     size_t off = isGzip ? gzipPayloadOffset(raw) : 0;
     if (isGzip && off == 0) { err = "bad gzip header"; return false; }
-    out.clear();
-    out.reserve(raw.size() * 2 + 1024);
+    // decompress into a local string; raw is needed for the gzip trailer
+    // check afterwards, so it must outlive the loop (no move before then).
+    std::string inflated;
+    inflated.reserve(raw.size() * 2 + 1024);
     mz_stream st;
     std::memset(&st, 0, sizeof(st));
     st.next_in = (uint8_t*)raw.data() + off;
@@ -382,7 +384,7 @@ bool inflateBody(const std::string& raw, const std::string& encoding, std::strin
             st.next_out = obuf;
             st.avail_out = sizeof(obuf);
             int ret = mz_inflate(&st, MZ_NO_FLUSH);  // MZ_FINISH assumes out fits everything
-            out.append((char*)obuf, sizeof(obuf) - st.avail_out);
+            inflated.append((char*)obuf, sizeof(obuf) - st.avail_out);
             lastRet = ret;
             if (ret == MZ_STREAM_END) break;
             if (ret == MZ_BUF_ERROR) {  // no more input: done or truncated
@@ -399,14 +401,15 @@ bool inflateBody(const std::string& raw, const std::string& encoding, std::strin
             // consumed 1 byte of it — irrelevant, we read from `raw`).
             uint32_t fileCrc = (uint32_t)tr2[0] | ((uint32_t)tr2[1] << 8) | ((uint32_t)tr2[2] << 16) | ((uint32_t)tr2[3] << 24);
             uint32_t calc = mz_crc32(0, Z_NULL, 0);
-            calc = mz_crc32(calc, (const unsigned char*)out.data(), (uInt)out.size());
+            calc = mz_crc32(calc, (const unsigned char*)inflated.data(), (uInt)inflated.size());
             Serial.printf("[net] gzip crc file=%08x calc=%08x %s\n", fileCrc, calc, fileCrc == calc ? "OK" : "MISMATCH");
         }
     }
-    if (lastRet != MZ_STREAM_END || out.size() < raw.size() / 2) {
+    if (lastRet != MZ_STREAM_END || inflated.size() < raw.size() / 2) {
         err = "gzip decode failed (ret=" + std::to_string(lastRet) + ")";
         return false;
     }
+    out = std::move(inflated);
     return true;
 }
 
@@ -474,12 +477,16 @@ bool Client::request(const Url& u, std::string& body, std::string& location,
 
     std::string raw;
     size_t lastReported = 0;
+    uint32_t bodyT0 = millis();
+    uint32_t lastData = bodyT0;
     if (chunked) {
         std::string sizeLine;
         int nChunks = 0;
         long lastSz = -1;
         long sumSizes = 0;
         for (;;) {
+            if (millis() - bodyT0 > (uint32_t)timeoutMs) { Serial.printf("[net] chunked: overall timeout\n"); break; }
+            if (millis() - lastData > 10000) { Serial.printf("[net] chunked: stall timeout\n"); break; }
             if (!readLine(client, sizeLine)) { Serial.printf("[net] chunk: size line read FAIL\n"); break; }
             long sz = strtol(sizeLine.c_str(), nullptr, 16);
             lastSz = sz;
@@ -491,10 +498,12 @@ bool Client::request(const Url& u, std::string& body, std::string& location,
             // in the middle of the body (this corrupted the gzip stream).
             uint8_t rbuf[4096];
             while (sz > 0 && (client.available() || client.connected())) {
+                if (millis() - lastData > 10000) { Serial.printf("[net] chunk: data stall\n"); break; }
                 int want = (int)(sz < 4096 ? sz : 4096);
                 int n = client.read(rbuf, (size_t)want);
                 if (n <= 0) { delay(2); continue; }
                 raw.append((const char*)rbuf, (size_t)n);
+                lastData = millis();
                 sz -= n;
                 if (raw.size() - lastReported >= 8192) {
                     lastReported = raw.size();
@@ -507,15 +516,16 @@ bool Client::request(const Url& u, std::string& body, std::string& location,
         Serial.printf("[net] chunked: %d chunks, raw=%u %s\n", nChunks, (unsigned)raw.size(), (long)raw.size() == sumSizes ? "FRAMING-OK" : "FRAMING-MISMATCH");
     } else {
         if (contentLength > 0) raw.reserve((size_t)contentLength);
-        uint32_t t0 = millis();
         uint8_t buf[2048];
         for (;;) {
             if (contentLength > 0 && (long)raw.size() >= contentLength) break;
-            if (millis() - t0 > (uint32_t)timeoutMs) break;
+            if (millis() - bodyT0 > (uint32_t)timeoutMs) break;
+            if (millis() - lastData > 10000) { Serial.printf("[net] body: stall timeout\n"); break; }
             if (client.available()) {
                 int n = client.read(buf, sizeof(buf));
                 if (n > 0) {
                     raw.append((char*)buf, n);
+                    lastData = millis();
                     if (raw.size() - lastReported >= 8192) {
                         lastReported = raw.size();
                         stage(("body " + std::to_string(raw.size() / 1024) + "KB").c_str());
@@ -530,10 +540,11 @@ bool Client::request(const Url& u, std::string& body, std::string& location,
     client.stop();
     Serial.printf("[net] body raw=%u enc=%s\n", (unsigned)raw.size(), encoding.c_str());
 
-    g_lastRaw = raw;  // keep for debug commands (saveraw/reinflate)
     stage("inflate");
-    if (!inflateBody(raw, encoding, body, err)) {
-        body = body.empty() ? raw : body;
+    bool ok = inflateBody(raw, encoding, body, err);
+    g_lastRaw = std::move(raw);  // keep raw for debug commands (saveraw/reinflate)
+    if (!ok) {
+        body = body.empty() ? std::move(g_lastRaw) : body;
         return false;
     }
     Serial.printf("[net] body final=%u\n", (unsigned)body.size());

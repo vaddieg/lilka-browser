@@ -89,13 +89,19 @@ std::vector<std::string> Browser::recentList() const {
 // Quick Start list: favorites first (marked '*'), then recent history.
 std::vector<std::string> Browser::quickList() const {
     std::vector<std::string> out;
-    for (auto& f : store::favorites(4)) out.push_back("* " + f);
+    out.reserve(9);
+    for (auto& f : store::favorites(6)) {
+        out.push_back(f);
+        if (out.size() >= 8) break;
+    }
     for (auto& u : recentList()) {
         if (out.size() >= 8) break;
         bool dup = false;
-        for (auto& e : out) if (e.find(u) != std::string::npos) dup = true;
+        for (auto& e : out) if (e == u) dup = true;
         if (!dup) out.push_back(u);
     }
+    // "Enter URL..." is always last (index == size()-1)
+    out.push_back("");
     return out;
 }
 
@@ -236,7 +242,7 @@ void Browser::navigate(const std::string& urlIn) {
     } else if (url.find("://") == std::string::npos) {
         url = "https://" + url;
     }
-    if (url == currentUrl_) return;
+    if (url == currentUrl_) { Serial.printf("[nav] same url, skip (cur=%s)\n", currentUrl_.c_str()); return; }
 
     net::setStageFn([](const char* s) { g_browser.onStage(s); });
     std::string lang = store::get("lang", "uk");
@@ -284,14 +290,14 @@ void Browser::navigate(const std::string& urlIn) {
     finishLoad(url, html, finalUrl);
 }
 
-void Browser::finishLoad(const std::string& url, const std::string& html, const std::string& finalUrl) {
+void Browser::finishLoad(const std::string& url, std::string html, const std::string& finalUrl) {
     // parse
     Serial.printf("[nav] parsing...\n");
     lilka::html::Parser p;
     p.feed(html.data(), html.size());
     p.finish();
-    page_ = p.page();
-    lastHtml_ = html;  // keep for the `dump` serial command
+    page_ = std::move(p.page());
+    lastHtml_.swap(html);  // keep for the `dump` serial command
     Serial.printf("[nav] blocks=%u title=%s\n", (unsigned)page_.blocks.size(), page_.title.c_str());
 
     history_.push_back(url);
@@ -349,6 +355,18 @@ void Browser::serialCmd(const std::string& in) {
     line = in.substr(b, e - b + 1);
     if (line.empty()) return;
     Serial.printf("[cmd] %s\n", line.c_str());
+    if (line == "heap") {
+        Serial.printf("[cmd] heap free=%u psram=%u\n", (unsigned)ESP.getFreeHeap(),
+                      (unsigned)ESP.getFreePsram());
+        return;
+    }
+    if (line == "qlist") {
+        auto l = quickList();
+        Serial.printf("[cmd] sel=%d\n", linklistSel_);
+        for (size_t i = 0; i < l.size(); i++)
+            Serial.printf("[cmd] qs[%u]: %s\n", (unsigned)i, l[i].empty() ? "(Enter URL)" : l[i].c_str());
+        return;
+    }
     if (line.rfind("key", 0) == 0) {
         std::string k = line.substr(3);
         while (!k.empty() && k.front() == ' ') k.erase(k.begin());
@@ -503,9 +521,16 @@ void Browser::serialCmd(const std::string& in) {
 }
 
 void Browser::goBack() {
-    if (history_.size() > 1) {
-        history_.pop_back();
-        currentUrl_ = history_.back();
+    if (history_.size() <= 1) {
+        Serial.printf("[nav] back: at home\n");
+        mode_ = QUICKSTART; linklistSel_ = 0;
+        dirty_ = true;
+        return;
+    }
+    history_.pop_back();
+    currentUrl_ = history_.back();
+    Serial.printf("[nav] back -> %s (hist=%u)\n", currentUrl_.c_str(), (unsigned)history_.size());
+    {
         if (currentUrl_.empty()) {
             page_.blocks.clear();
             buildLines();
@@ -515,7 +540,7 @@ void Browser::goBack() {
                 lilka::html::Parser p;
                 p.feed(html.data(), html.size());
                 p.finish();
-                page_ = p.page();
+                page_ = std::move(p.page());
                 buildLines();
             } else {
                 navigate(currentUrl_);
@@ -689,16 +714,18 @@ bool Browser::loop() {
             else if (just(Buttons::DOWN)) { linklistSel_ = (linklistSel_ + 1) % (n + 1); dirty_ = true; act = true; }
             else if (just(Buttons::A) || just(Buttons::START)) {
                 auto list = quickList();
-                if (linklistSel_ < n) {
-                    navigate(list[linklistSel_]);
-                } else {
+                bool last = linklistSel_ >= (int)list.size() - 1;
+                if (last) {
+                    // "Enter URL..." entry
                     inputPurpose_ = "url";
                     inputFormAction_.clear();
                     kb_.reset();
                     inputFrom_ = QUICKSTART;
                     mode_ = INPUTMODE;
-                    dirty_ = true;
+                } else if (linklistSel_ < n) {
+                    navigate(list[linklistSel_]);
                 }
+                dirty_ = true;
                 act = true;
             } else if (just(Buttons::B)) {
                 mode_ = PAGE;
@@ -767,8 +794,8 @@ bool Browser::loop() {
                 break;
             }
             case QUICKSTART: {
-                qsCache_ = quickList();
-                qsCache_.push_back("Enter URL...");
+                qsCache_ = quickList();  // includes trailing "Enter URL..." slot
+                for (auto& e : qsCache_) if (e.empty()) e = "Enter URL...";
                 renderPopup("Go (C)", qsCache_, linklistSel_);
                 break;
             }

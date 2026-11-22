@@ -13,7 +13,7 @@ namespace html {
 
 class Parser {
 public:
-    static constexpr size_t kMaxBlocks = 400;  // cap: memory + menu usability
+    static constexpr size_t kMaxBlocks = 250;  // cap: memory + menu usability (13px: 6 rows/screen)
     // Feed chunks of HTML; call finish() then page().
     void feed(const char* data, size_t len);
     void finish();

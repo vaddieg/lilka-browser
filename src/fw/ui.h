@@ -68,7 +68,7 @@ private:
     void navigate(const std::string& url);
     void submitPost(const std::string& url, const std::vector<std::pair<std::string, std::string>>& fields,
                     const std::string& extraName, const std::string& extraValue);
-    void finishLoad(const std::string& url, const std::string& html, const std::string& finalUrl);
+    void finishLoad(const std::string& url, std::string html, const std::string& finalUrl);
 
     /// net::StageFn target — redraws the busy screen inline (fetch blocks the loop).
     void onStage(const char* s);
