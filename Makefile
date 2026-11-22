@@ -4,9 +4,9 @@ BUILD := build
 
 all: $(BUILD)/parser-test
 
-$(BUILD)/parser-test: tests/main.cpp src/html_parser.h src/html_parser.ipp src/ir.h
+$(BUILD)/parser-test: tests/main.cpp src/html_parser.h src/html_parser.ipp src/ir.h src/charset.h src/charset.cpp
 	@mkdir -p $(BUILD)
-	$(CXX) $(CXXFLAGS) -o $@ tests/main.cpp
+	$(CXX) $(CXXFLAGS) -o $@ tests/main.cpp src/charset.cpp
 
 test: $(BUILD)/parser-test
 	./$(BUILD)/parser-test

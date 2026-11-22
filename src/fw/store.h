@@ -23,9 +23,11 @@ void addFavorite(const std::string& url);
 std::vector<std::string> favorites(int max = 10);
 bool isFavorite(const std::string& url);
 
-/// Cache helpers (v1: raw page cache keyed by URL hash).
-bool cachePut(const std::string& url, const std::string& html);
-bool cacheGet(const std::string& url, std::string& html);
+/// Cache helpers (page cache keyed by URL hash; stores body + validators).
+bool cachePut(const std::string& url, const std::string& html,
+              const std::string& etag = "", const std::string& lastModified = "");
+bool cacheGet(const std::string& url, std::string& html,
+              std::string* etag = nullptr, std::string* lastModified = nullptr);
 
 /// Cookie jar persistence: /browser/cookies.txt (domain<TAB>name=value per line).
 bool cookiesLoad(std::vector<std::string>& rows);

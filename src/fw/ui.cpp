@@ -3,6 +3,7 @@
 #include "net.h"
 #include "store.h"
 #include "html_parser.h"
+#include "charset.h"
 #include <WiFi.h>
 #include <algorithm>
 #include <cctype>
@@ -111,6 +112,7 @@ bool Browser::begin(Arduino_GFX* gfx) {
     if (store::begin()) {
         int fs = atoi(store::get("font", "1").c_str());
         if (fs >= 1 && fs <= 3) fontScale_ = fs;
+        compact_ = (store::get("compact", "0") == "1");
         net::loadCookieJar();
         qsCache_ = quickList();
     }
@@ -129,12 +131,79 @@ bool Browser::clickable(int lineIdx) const {
            k == BlockKind::Checkbox;
 }
 
+// Boilerplate: short, generic nav/footer strings that waste screen space.
+// Matched on short blocks only (<= 24 chars) so real content is never dropped.
+namespace {
+bool isBoilerplateText(const std::string& raw) {
+    std::string s = raw;
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\n')) s.pop_back();
+    for (auto& c : s) c = (char)tolower((unsigned char)c);
+    if (s.size() > 24) return false;
+    static const char* k[] = {
+        "skip to content", "jump to content", "main menu", "move to sidebar",
+        "hide", "show", "show more", "show less", "read more", "continue",
+        "sign in", "sign up", "log in", "login", "log out", "register",
+        "account", "my account", "profile", "preferences",
+        "privacy", "privacy policy", "privacy notice", "cookies", "cookie policy",
+        "terms", "terms of use", "terms of service", "legal", "disclaimer",
+        "feedback", "contact", "help", "support",
+        "home", "about", "about us", "main", "top", "back to top", "navigation",
+        "search", "random article", "donate", "give", "subscribe", "follow us",
+        "tools", "more", "less", "expand", "collapse", "other projects",
+        "in other languages", "appearance", "mobile view", "desktop view",
+        "enable js", "javascript is disabled", "settings",
+    };
+    for (auto* e : k) if (s == e) return true;
+    return false;
+}
+}  // namespace
+
+bool Browser::isBoilerplate(const lilka::Block& b) const {
+    if (!compact_) return false;
+    // only non-interactive, short text-ish blocks are candidates
+    if (b.kind != lilka::BlockKind::Text && b.kind != lilka::BlockKind::ListItem &&
+        b.kind != lilka::BlockKind::Link) return false;
+    return isBoilerplateText(b.text);
+}
+
+void Browser::runFind(const std::string& term) {
+    findMatches_.clear();
+    if (term.empty()) { findActive_ = false; return; }
+    // case-insensitive substring match across the rendered lines
+    auto fold = [](std::string s) {
+        for (auto& c : s) c = (char)tolower((unsigned char)c);
+        return s;
+    };
+    std::string needle = fold(term);
+    for (int i = 0; i < (int)lines_.size(); i++) {
+        if (fold(lines_[i].text).find(needle) != std::string::npos) findMatches_.push_back(i);
+    }
+    findTerm_ = term;
+    if (!findMatches_.empty()) {
+        findPos_ = 0;
+        lineCursor_ = findMatches_[0];
+        findActive_ = true;
+    } else {
+        findActive_ = false;
+    }
+}
+
+void Browser::findNext(bool forward) {
+    if (!findActive_ || findMatches_.empty()) return;
+    findPos_ = (findPos_ + (forward ? 1 : (int)findMatches_.size() - 1)) % (int)findMatches_.size();
+    lineCursor_ = findMatches_[findPos_];
+}
+
 void Browser::buildLines() {
+    // any rebuild invalidates find match indices
+    findActive_ = false; findMatches_.clear(); findTerm_.clear(); findPos_ = 0;
     lines_.clear();
     links_.clear();
     const int16_t maxW = gfx_ ? gfx_->width() - 10 : 230;
     for (int i = 0; i < (int)page_.blocks.size(); i++) {
         const auto& b = page_.blocks[i];
+        if (isBoilerplate(b)) continue;
         char buf[64];
         switch (b.kind) {
             case BlockKind::Heading: {
@@ -260,6 +329,18 @@ std::vector<std::pair<std::string, std::string>> Browser::withChecksFields(
     return f;
 }
 
+// Transcode a fetched body to UTF-8 in place if it came in a legacy
+// single-byte encoding (cp1251/KOI8-R). No-op when already UTF-8.
+static void transcodeToUtf8(std::string& html) {
+    std::string enc = lilka::charset::detect(html, net::lastCharset());
+    if (enc != "utf8") {
+        Serial.printf("[nav] transcode %s -> utf8\n", enc.c_str());
+        std::string utf8;
+        lilka::charset::toUtf8(html, enc.c_str(), utf8);
+        html = std::move(utf8);
+    }
+}
+
 void Browser::navigate(const std::string& urlIn) {
     std::string url = urlIn;
     while (!url.empty() && (unsigned char)url.back() < 32) url.pop_back();
@@ -289,29 +370,54 @@ void Browser::navigate(const std::string& urlIn) {
     gfx_->flush();
 
     std::string err, html, finalUrl;
-    bool fromCache = false;
+    std::string cachedHtml, cachedEtag, cachedLm;
+    bool haveCache = false;
     if (store::get("cache", "1") == "1") {
-        if (store::cacheGet(url, html)) fromCache = true;
+        if (store::cacheGet(url, cachedHtml, &cachedEtag, &cachedLm)) haveCache = true;
     }
-    if (!fromCache) {
+    bool canRevalidate = haveCache && (!cachedEtag.empty() || !cachedLm.empty());
+
+    if (!canRevalidate && !haveCache) {
+        // no cache at all: plain GET
         std::string ssid, pass;
-        Serial.printf("[nav] wifiCreds...\n");
-        if (!net::wifiCreds(ssid, pass)) {
-            Serial.printf("[nav] no creds\n");
-            err = "no wifi creds (set up in Keira)";
-        } else if (WiFi.status() != WL_CONNECTED && !net::connect(ssid, pass, 20000)) {
-            Serial.printf("[nav] wifi connect FAILED\n");
-            err = "wifi connect failed";
-        } else {
+        if (!net::wifiCreds(ssid, pass)) { err = "no wifi creds (set up in Keira)"; }
+        else if (WiFi.status() != WL_CONNECTED && !net::connect(ssid, pass, 20000)) { err = "wifi connect failed"; }
+        else {
             Serial.printf("[nav] GET %s ...\n", url.c_str());
             net::Client c;
-            if (!c.get(url, html, finalUrl, err)) {
-                Serial.printf("[nav] GET failed: %s\n", err.c_str());
-            } else {
-                Serial.printf("[nav] got %u bytes, final %s\n", (unsigned)html.size(), finalUrl.c_str());
-                store::cachePut(finalUrl, html);
+            if (c.get(url, html, finalUrl, err)) {
+                Serial.printf("[nav] got %u bytes\n", (unsigned)html.size());
+                transcodeToUtf8(html);
+                store::cachePut(finalUrl, html, net::lastEtag(), net::lastModified());
             }
         }
+    } else if (canRevalidate) {
+        // conditional GET: reuse cache on 304, refresh on 200
+        std::string ssid, pass;
+        if (!net::wifiCreds(ssid, pass)) { err = "no wifi creds (set up in Keira)"; }
+        else if (WiFi.status() != WL_CONNECTED && !net::connect(ssid, pass, 20000)) { err = "wifi connect failed"; }
+        else {
+            Serial.printf("[nav] GET(cond) %s ...\n", url.c_str());
+            net::Client c;
+            if (c.getCond(url, html, finalUrl, err, cachedEtag, cachedLm)) {
+                if (net::lastNotModified()) {
+                    Serial.printf("[nav] 304 — reuse cache (%u bytes)\n", (unsigned)cachedHtml.size());
+                    html = std::move(cachedHtml);
+                } else {
+                    transcodeToUtf8(html);
+                    Serial.printf("[nav] 200 refreshed %u bytes\n", (unsigned)html.size());
+                    store::cachePut(finalUrl, html, net::lastEtag(), net::lastModified());
+                }
+            } else if (haveCache) {
+                // network/HTTP failure but we have a copy — serve it stale
+                Serial.printf("[nav] revalidate failed (%s), serving stale cache\n", err.c_str());
+                html = std::move(cachedHtml);
+                err.clear();
+            }
+        }
+    } else {
+        // cache exists but has no validators: serve it directly
+        html = std::move(cachedHtml);
     }
     if (!err.empty()) {
         errText_ = err;
@@ -324,6 +430,8 @@ void Browser::navigate(const std::string& urlIn) {
 }
 
 void Browser::finishLoad(const std::string& url, std::string html, const std::string& finalUrl) {
+    // a new page invalidates any in-page find
+    findActive_ = false; findTerm_.clear(); findMatches_.clear();
     // parse
     Serial.printf("[nav] parsing...\n");
     lilka::html::Parser p;
@@ -433,25 +541,30 @@ void Browser::serialCmd(const std::string& in) {
         Serial.printf("[cmd] cursor -> %d\n", lineCursor_);
         return;
     }
+    if (line == "findnext") { findNext(true); Serial.printf("[cmd] findnext -> %d (pos %d/%d)\n", lineCursor_, findPos_ + 1, (int)findMatches_.size()); return; }
+    if (line == "findclear") { findActive_ = false; findMatches_.clear(); findTerm_.clear(); dirty_ = true; Serial.printf("[cmd] find cleared\n"); return; }
     if (line.rfind("find", 0) == 0) {
-        // find <text> -> list matching line numbers (case-insensitive)
+        // find <text> -> run the in-page find (jumps to first match)
         std::string needle = line.substr(5);
         while (!needle.empty() && needle.front() == ' ') needle.erase(needle.begin());
-        bool found = false;
-        auto fold = [](std::string& s) {  // ASCII-only: tolower() corrupts UTF-8
-            for (auto& ch : s) if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
-        };
-        for (int i = 0; i < (int)lines_.size(); i++) {
-            std::string t = lines_[i].text;
-            std::string n2 = needle;
-            fold(t); fold(n2);
-            if (t.find(n2) != std::string::npos) {
-                Serial.printf("[cmd] found line %d: '%s'\n", i, lines_[i].text.c_str());
-                found = true;
-            }
+        if (needle.empty()) { Serial.printf("[cmd] usage: find <text>\n"); return; }
+        runFind(needle);
+        mode_ = PAGE;
+        dirty_ = true;
+        if (findMatches_.empty()) {
+            Serial.printf("[cmd] find: no matches\n");
+            errText_ = "not found: " + needle;
+            mode_ = ERROR;
+        } else {
+            Serial.printf("[cmd] find: %d match(es), cursor->%d\n",
+                          (int)findMatches_.size(), lineCursor_);
         }
-        if (!found) Serial.printf("[cmd] not found: %s\n", needle.c_str());
-        else Serial.println("unknown key");
+        return;
+    }
+    if (line == "compact" || line == "compact on" || line == "compact off") {
+        bool on = (line == "compact") ? !compact_ : (line.find("on") != std::string::npos);
+        if (on != compact_) { compact_ = on; store::set("compact", on ? "1" : "0"); buildLines(); }
+        Serial.printf("[cmd] compact=%s lines=%d\n", compact_ ? "on" : "off", (int)lines_.size());
         return;
     }
     if (line.rfind("parse ", 0) == 0) {
@@ -473,6 +586,24 @@ void Browser::serialCmd(const std::string& in) {
         return;
     }
     if (line == "err") { Serial.printf("err: %s\n", errText_.c_str()); return; }
+    if (line == "mkt") {
+        Serial.printf("[sd] /browser exists=%d\n", (int)SD.exists("/browser"));
+        bool m1 = SD.mkdir("/browser/cache");
+        Serial.printf("[sd] mkdir /browser/cache -> %d, exists=%d\n", (int)m1, (int)SD.exists("/browser/cache"));
+        File t = SD.open("/browser/cache/_t.txt", FILE_WRITE);
+        Serial.printf("[sd] open write -> %d\n", (int)t);
+        if (t) { t.print("hi"); t.close(); }
+        Serial.printf("[sd] _t.txt exists=%d\n", (int)SD.exists("/browser/cache/_t.txt"));
+        return;
+    }
+    if (line == "validators") {
+        if (currentUrl_.empty()) { Serial.printf("[cmd] no current url\n"); return; }
+        std::string h, e, lm;
+        if (store::cacheGet(currentUrl_, h, &e, &lm))
+            Serial.printf("[cmd] cache: body=%u etag='%s' lm='%s'\n", (unsigned)h.size(), e.c_str(), lm.c_str());
+        else Serial.printf("[cmd] cache: miss for %s\n", currentUrl_.c_str());
+        return;
+    }
     if (line == "cookies") {
         Serial.printf("COOKIES (%u):\n%s", (unsigned)net::cookieCount(), net::dumpCookies().c_str());
         return;
@@ -649,18 +780,23 @@ bool Browser::loop() {
             } else if (just(Buttons::RIGHT)) {
                 lineCursor_ = std::min((int)lines_.size() - 1, lineCursor_ + vis); sel_ = -1; act = true;
             } else if (just(Buttons::SELECT)) {
-                // jump selection to the next interactive element (wraps)
-                std::vector<int> cl;
-                frameClickables(cl);
-                if (!cl.empty()) {
-                    size_t pos = 0;
-                    for (size_t i = 0; i < cl.size(); i++) if (cl[i] == lineCursor_) pos = i;
-                    lineCursor_ = cl[(pos + 1) % cl.size()];
+                if (findActive_ && !findMatches_.empty()) {
+                    findNext(true);   // cycle to the next match
+                } else {
+                    // jump selection to the next interactive element (wraps)
+                    std::vector<int> cl;
+                    frameClickables(cl);
+                    if (!cl.empty()) {
+                        size_t pos = 0;
+                        for (size_t i = 0; i < cl.size(); i++) if (cl[i] == lineCursor_) pos = i;
+                        lineCursor_ = cl[(pos + 1) % cl.size()];
+                    }
                 }
                 sel_ = -1;
                 act = true;
             } else if (just(Buttons::START)) {
-                activate(lineCursor_);
+                if (findActive_ && !findMatches_.empty()) findNext(false);  // prev match
+                else activate(lineCursor_);
             } else if (just(Buttons::A)) {
                 // A = primary action on the element under the cursor:
                 // link/button -> activate, input -> keyboard, select -> cycle.
@@ -681,6 +817,11 @@ bool Browser::loop() {
                 }
                 act = true;
             } else if (just(Buttons::B)) {
+                if (findActive_) {  // B first clears an active find, not navigate back
+                    findActive_ = false; findTerm_.clear(); findMatches_.clear();
+                    act = true;
+                    break;
+                }
                 if (!currentUrl_.empty() && history_.size() > 1) goBack();
                 else { history_.clear(); history_.push_back(""); currentUrl_.clear(); page_.blocks.clear(); buildLines(); }
                 act = true;
@@ -707,7 +848,7 @@ bool Browser::loop() {
             break;
         }
         case SETTINGS: {
-            constexpr int nItems = 5;
+            constexpr int nItems = 7;
             bool touched = false;
             if (just(Buttons::UP)) { linklistSel_ = (linklistSel_ + nItems - 1) % nItems; touched = true; }
             else if (just(Buttons::DOWN)) { linklistSel_ = (linklistSel_ + 1) % nItems; touched = true; }
@@ -733,6 +874,17 @@ bool Browser::loop() {
                         store::addFavorite(currentUrl_);
                         Serial.printf("[fav] added %s\n", currentUrl_.c_str());
                     }
+                } else if (linklistSel_ == 4) {
+                    // compact mode: drop boilerplate nav/footer blocks
+                    compact_ = !compact_;
+                    store::set("compact", compact_ ? "1" : "0");
+                    buildLines();
+                } else if (linklistSel_ == 5) {
+                    // in-page find: ask for a term, then jump to first match
+                    inputPurpose_ = "find";
+                    kb_.reset();
+                    inputFrom_ = SETTINGS;
+                    mode_ = INPUTMODE;
                 } else {
                     mode_ = LINKLIST;
                     linklistSel_ = 0;
@@ -785,6 +937,15 @@ bool Browser::loop() {
                 std::string v = kb_.value();
                 if (inputPurpose_ == "url") {
                     navigate(v);
+                } else if (inputPurpose_ == "find") {
+                    // in-page find: jump to first match (SELECT cycles the rest)
+                    runFind(v);
+                    mode_ = PAGE;
+                    Serial.printf("[find] '%s' -> %d match(es)\n", v.c_str(), (int)findMatches_.size());
+                    if (findMatches_.empty()) {
+                        errText_ = "not found: " + v;
+                        mode_ = ERROR;
+                    }
                 } else if (!inputFormAction_.empty()) {
                     std::string action = inputFormAction_;
                     // relative action (e.g. Google's "/search") -> resolve against page host
@@ -825,6 +986,8 @@ bool Browser::loop() {
                     std::string("Cache: ") + (store::get("cache", "1") == "1" ? "on" : "off"),
                     std::string("Language: ") + store::get("lang", "uk"),
                     std::string("Favorite this page"),
+                    std::string("Compact: ") + (compact_ ? "on" : "off"),
+                    std::string("Find on page..."),
                     std::string("Link list: enter"),
                 };
                 renderPopup("Settings (D)", items, linklistSel_);
@@ -945,8 +1108,15 @@ void Browser::renderPage() {
         font::text(gfx_, 10, 60, "Press C to open a page", C_DIM, 1);
     }
     // footer
-    font::text(gfx_, 4, gfx_->height() - kFooterH + 1,
-               "UD=move SEL=jump A=act B=back", C_DIM, 1);
+    if (findActive_ && !findMatches_.empty()) {
+        char fbuf[80];
+        snprintf(fbuf, sizeof(fbuf), "find '%s' %d/%d  SEL=next B=done",
+                 findTerm_.c_str(), findPos_ + 1, (int)findMatches_.size());
+        font::text(gfx_, 4, gfx_->height() - kFooterH + 1, font::fit(fbuf, gfx_->width() - 8, 1), C_LINK, 1);
+    } else {
+        font::text(gfx_, 4, gfx_->height() - kFooterH + 1,
+                   "UD=move SEL=jump A=act B=back", C_DIM, 1);
+    }
 }
 
 void Browser::renderLinkList() {

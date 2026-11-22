@@ -59,6 +59,16 @@ private:
 
     // settings
     int fontScale_ = 1;         // 1 = 13px, 2 = 20px, 3 = 40px
+    bool compact_ = false;      // drop boilerplate nav/footer blocks (small-screen win)
+    bool isBoilerplate(const lilka::Block& b) const;
+
+    // in-page find
+    std::string findTerm_;
+    std::vector<int> findMatches_;  // line indices (into lines_)
+    int findPos_ = 0;
+    bool findActive_ = false;
+    void runFind(const std::string& term);
+    void findNext(bool forward = true);
 
     // derived
     int lineH() const;

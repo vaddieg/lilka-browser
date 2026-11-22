@@ -5,6 +5,7 @@
 // CLI:           ./build/parser-test <fixture.html | http(s)://url>
 //                (URLs are fetched with curl; output is the IR dump)
 #include "../src/html_parser.h"
+#include "../src/charset.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -195,6 +196,43 @@ void test_select() {
     CHECK(s.name == "sort");
 }
 
+void test_charset() {
+    using namespace lilka::charset;
+    // canonicalization
+    CHECK(canonical("windows-1251") == "cp1251");
+    CHECK(canonical("CP1251") == "cp1251");
+    CHECK(canonical("koi8-r") == "koi8r");
+    CHECK(canonical("utf-8") == "utf8");
+    CHECK(canonical("big5").empty());
+
+    // cp1251 -> UTF-8: "Прив" in cp1251 = CF F0 E8 E2
+    std::string src;
+    src += (char)0xCF; src += (char)0xF0; src += (char)0xE8; src += (char)0xE2;
+    std::string out;
+    toUtf8(src, "cp1251", out);
+    // expected UTF-8: П U+0410 -> D0 90 ; р U+0440 -> D1 80
+    //                и U+0438 -> D0 B8 ; в U+0432 -> D0 B2
+    std::string expect;
+    expect += (char)0xD0; expect += (char)0x9F;
+    expect += (char)0xD1; expect += (char)0x80;
+    expect += (char)0xD0; expect += (char)0xB8;
+    expect += (char)0xD0; expect += (char)0xB2;
+    CHECK(out == expect);
+
+    // KOI8-R: "Прив" -> П=0xF0 р=0xD2 и=0xC9 в=0xD7
+    std::string koi;
+    koi += (char)0xF0; koi += (char)0xD2; koi += (char)0xC9; koi += (char)0xD7;
+    toUtf8(koi, "koi8-r", out);
+    CHECK(out == expect);
+
+    // detection: http charset wins
+    CHECK(detect("<html>x</html>", "windows-1251") == "cp1251");
+    // meta charset sniffed (case-insensitive, quoted)
+    CHECK(detect("<html><head><meta charset=\"KOI8-R\"></head></html>", "") == "koi8r");
+    // valid utf-8 with no declaration -> utf8
+    CHECK(detect("<p>hello</p>", "") == "utf8");
+}
+
 void test_lists() {
     Page pg = parse("<ul><li>one</li><li>two</li></ul>");
     CHECK(countKind(pg, BlockKind::ListItem) == 2);
@@ -310,6 +348,7 @@ int main(int argc, char** argv) {
     test_noscript_rendered();
     test_entities();
     test_cyrillic();
+    test_charset();
     test_inputs_forms();
     test_checkboxes();
     test_tables();

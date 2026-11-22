@@ -1,4 +1,5 @@
 #include "store.h"
+#include "hw.h"   // initSD(): SD on the shared SPI bus (must match the display bus)
 #include <cstring>
 #include <mbedtls/md5.h>
 
@@ -10,8 +11,10 @@ constexpr const char* kSettings = "/browser/settings.txt";
 constexpr const char* kHistory = "/browser/history.txt";
 
 bool ensureDir() {
-    if (SD.exists(kDir)) return true;
-    return SD.mkdir(kDir);
+    bool ok = true;
+    if (!SD.exists(kDir)) ok = SD.mkdir(kDir);
+    if (!SD.exists("/browser/cache")) ok = SD.mkdir("/browser/cache") && ok;
+    return ok;
 }
 
 std::string hashOf(const std::string& s) {
@@ -24,7 +27,10 @@ std::string hashOf(const std::string& s) {
 }  // namespace
 
 bool begin() {
-    if (!SD.begin()) return false;
+    // Use the shared-SPI-bus init (correct CS + SPIClass + freq), not the
+    // no-arg SD.begin() which does not bind the bus the display already owns.
+    if (!initSD()) { Serial.printf("[store] SD init FAILED\n"); return false; }
+    Serial.printf("[store] SD ok, total=%u used=%u\n", (unsigned)SD.totalBytes(), (unsigned)SD.usedBytes());
     return ensureDir();
 }
 
@@ -136,28 +142,51 @@ std::vector<std::string> urls(int max) {
     return out;
 }
 
-bool cachePut(const std::string& url, const std::string& html) {
-    if (html.size() > 200 * 1024) return false;  // don't bloat the card
+// Cache file layout (deterministic): two validator header lines, a blank
+// separator line, then the raw body. etag / last-modified never contain tabs
+// or newlines in practice. Missing validators are stored as empty values.
+bool cachePut(const std::string& url, const std::string& html,
+              const std::string& etag, const std::string& lastModified) {
+    if (html.size() > 512 * 1024) return false;  // don't bloat the card
+    if (!SD.exists("/browser/cache")) SD.mkdir("/browser/cache");
     std::string path = std::string("/browser/cache/") + hashOf(url) + ".html";
     File f = SD.open(path.c_str(), FILE_WRITE);
-    if (!f) return false;
+    if (!f) { Serial.printf("[store] cachePut open FAIL %s\n", path.c_str()); return false; }
+    Serial.printf("[store] cachePut %s (%u bytes, etag='%s')\n", path.c_str(), (unsigned)html.size(), etag.c_str());
+    f.print("ETAG\t"); f.print(etag.c_str()); f.print("\n");
+    f.print("LM\t");   f.print(lastModified.c_str()); f.print("\n");
+    f.print("\n");
     f.write((const uint8_t*)html.data(), html.size());
     f.close();
     return true;
 }
 
-bool cacheGet(const std::string& url, std::string& html) {
+bool cacheGet(const std::string& url, std::string& html, std::string* etag, std::string* lastModified) {
     std::string path = std::string("/browser/cache/") + hashOf(url) + ".html";
     File f = SD.open(path.c_str(), FILE_READ);
     if (!f) return false;
-    html.reserve(min((size_t)256 * 1024, f.size()));
+    if (etag) etag->clear();
+    if (lastModified) lastModified->clear();
+    std::string all;
+    all.reserve(min((size_t)256 * 1024, f.size()));
     uint8_t buf[1024];
     while (f.available()) {
         int n = f.read(buf, sizeof(buf));
         if (n <= 0) break;
-        html.append((char*)buf, n);
+        all.append((char*)buf, n);
     }
     f.close();
+    // body starts after the first blank line ("\n\n")
+    size_t sep = all.find("\n\n");
+    if (sep == std::string::npos) { html = all; return !html.empty(); }
+    const std::string head = all.substr(0, sep);
+    html = all.substr(sep + 2);
+    // parse the two validator lines
+    size_t nl = head.find('\n');
+    std::string l1 = head.substr(0, nl);
+    std::string l2 = (nl == std::string::npos) ? "" : head.substr(nl + 1);
+    if (l1.rfind("ETAG\t", 0) == 0 && etag) *etag = l1.substr(5);
+    if (l2.rfind("LM\t", 0) == 0 && lastModified) *lastModified = l2.substr(3);
     return !html.empty();
 }
 

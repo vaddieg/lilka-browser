@@ -34,6 +34,16 @@ bool inflateBody(const std::string& raw, const std::string& encoding, std::strin
 /// Last raw (pre-inflate) response body — kept for debug commands.
 const std::string& lastRawBody();
 
+/// Declared charset from the last response (may be empty).
+const std::string& lastCharset();
+
+/// ETag / Last-Modified from the last 200 response (may be empty).
+const std::string& lastEtag();
+const std::string& lastModified();
+
+/// True if the last GET answered 304 Not Modified (body is empty; reuse cache).
+bool lastNotModified();
+
 /// Resolve `ref` against `base` (RFC 3986-ish, no fragments).
 std::string resolve(const Url& base, const std::string& ref);
 
@@ -56,6 +66,14 @@ public:
              const std::string& userAgent =
                  "Lilka/1.0 (ESP32-S3; browser; +https://github.com/lilka-dev/lilka)");
 
+    /// GET with conditional revalidation: sends If-None-Match / If-Modified-Since.
+    /// On 304 the body is left empty and lastNotModified() is true.
+    bool getCond(const std::string& url, std::string& outBody, std::string& outFinalUrl,
+                 std::string& err, const std::string& ifNoneMatch, const std::string& ifModifiedSince,
+                 int timeoutMs = 15000, int maxRedirects = 5,
+                 const std::string& userAgent =
+                     "Lilka/1.0 (ESP32-S3; browser; +https://github.com/lilka-dev/lilka)");
+
     /// POST `form` (application/x-www-form-urlencoded) to `url`.
     /// Redirects are followed with GET (browser behavior for 301/302/303).
     bool post(const std::string& url, const std::string& form,
@@ -70,7 +88,8 @@ private:
     /// `method` is "GET" or "POST"; `postBody` sent as-is for POST.
     bool request(const Url& u, std::string& body, std::string& location,
                  std::string& err, int timeoutMs, const std::string& userAgent, int& status,
-                 const std::string& method = "GET", const std::string& postBody = "");
+                 const std::string& method = "GET", const std::string& postBody = "",
+                 const std::string& ifNoneMatch = "", const std::string& ifModifiedSince = "");
 };
 
 /// Progress/stage reporting: called with "dns", "tcp", "tls", "send",

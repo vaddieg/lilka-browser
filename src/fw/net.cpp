@@ -353,9 +353,21 @@ bool Client::open(const Url& u, int timeoutMs, WiFiClientSecure& client, std::st
 
 namespace {
 std::string g_lastRaw;
+std::string g_charset;   // declared charset from the last response (may be empty)
+std::string g_etag;
+std::string g_lastModified;
+bool g_notModified = false;
 }
 
 const std::string& lastRawBody() { return g_lastRaw; }
+
+const std::string& lastCharset() { return g_charset; }
+
+const std::string& lastEtag() { return g_etag; }
+
+const std::string& lastModified() { return g_lastModified; }
+
+bool lastNotModified() { return g_notModified; }
 
 bool inflateBody(const std::string& raw, const std::string& encoding, std::string& out, std::string& err) {
     bool wantGzip = encoding.find("gzip") != std::string::npos;
@@ -415,7 +427,8 @@ bool inflateBody(const std::string& raw, const std::string& encoding, std::strin
 
 bool Client::request(const Url& u, std::string& body, std::string& location,
                      std::string& err, int timeoutMs, const std::string& userAgent,
-                     int& status, const std::string& method, const std::string& postBody) {
+                     int& status, const std::string& method, const std::string& postBody,
+                     const std::string& ifNoneMatch, const std::string& ifModifiedSince) {
     WiFiClientSecure client;
     if (!open(u, timeoutMs, client, err)) return false;
 
@@ -427,6 +440,8 @@ bool Client::request(const Url& u, std::string& body, std::string& location,
                       "Accept-Encoding: gzip\r\n"
                       "Accept-Language: " + g_acceptLang + "\r\n" +
                       (cookieHdr.empty() ? "" : ("Cookie: " + cookieHdr + "\r\n"));
+    if (!ifNoneMatch.empty())     req += "If-None-Match: " + ifNoneMatch + "\r\n";
+    if (!ifModifiedSince.empty()) req += "If-Modified-Since: " + ifModifiedSince + "\r\n";
     if (method == "POST" && !postBody.empty()) {
         req += "Content-Type: application/x-www-form-urlencoded\r\n";
         req += "Content-Length: " + std::to_string(postBody.size()) + "\r\n";
@@ -450,6 +465,15 @@ bool Client::request(const Url& u, std::string& body, std::string& location,
     bool chunked = false;
     long contentLength = -1;
     std::string encoding;
+    std::string contentType;
+    g_notModified = (status == 304);
+    if (status == 304) {
+        // Not Modified: no body expected; stop reading and report success.
+        client.stop();
+        body.clear();
+        Serial.printf("[net] 304 Not Modified (reuse cache)\n");
+        return true;
+    }
     for (;;) {
         if (!readLine(client, line)) break;
         if (line.empty()) break;
@@ -473,6 +497,9 @@ bool Client::request(const Url& u, std::string& body, std::string& location,
         else if (k == "content-length") contentLength = atol(v.c_str());
         else if (k == "transfer-encoding") { if (v.find("chunked") != std::string::npos) chunked = true; }
         else if (k == "content-encoding") encoding = v;
+        else if (k == "content-type") contentType = v;
+        else if (k == "etag") g_etag = v;
+        else if (k == "last-modified") g_lastModified = v;
     }
 
     std::string raw;
@@ -538,7 +565,23 @@ bool Client::request(const Url& u, std::string& body, std::string& location,
         }
     }
     client.stop();
-    Serial.printf("[net] body raw=%u enc=%s\n", (unsigned)raw.size(), encoding.c_str());
+    Serial.printf("[net] body raw=%u enc=%s ctype=%s\n", (unsigned)raw.size(), encoding.c_str(), contentType.c_str());
+
+    // remember the declared charset so the caller can transcode legacy encodings
+    g_charset.clear();
+    {
+        std::string ct = contentType;
+        for (auto& ch : ct) ch = (char)tolower((unsigned char)ch);
+        size_t c = ct.find("charset=");
+        if (c != std::string::npos) {
+            size_t i = c + 8;
+            if (i < ct.size() && (ct[i] == '"' || ct[i] == '\'')) i++;
+            size_t s = i;
+            while (i < ct.size() && ct[i] != '"' && ct[i] != '\''
+                   && ct[i] != ';' && ct[i] != ' ') i++;
+            g_charset = ct.substr(s, i - s);
+        }
+    }
 
     stage("inflate");
     bool ok = inflateBody(raw, encoding, body, err);
@@ -616,6 +659,40 @@ bool Client::get(const std::string& url, std::string& outBody, std::string& outF
             cur = rewriteUrl(cur);
             Serial.printf("[net] redirect -> %s\n", cur.c_str());
             if (!parseUrl(cur, probe)) { err = "bad redirect: " + cur; return false; }
+            continue;
+        }
+        if (status != 200) { err = "http " + std::to_string(status); return false; }
+        stage("done");
+        outBody = std::move(body);
+        outFinalUrl = u.toString();
+        return true;
+    }
+    err = "too many redirects";
+    return false;
+}
+
+bool Client::getCond(const std::string& url, std::string& outBody, std::string& outFinalUrl,
+                     std::string& err, const std::string& ifNoneMatch, const std::string& ifModifiedSince,
+                     int timeoutMs, int maxRedirects, const std::string& userAgent) {
+    std::string cur = rewriteUrl(url);
+    for (int i = 0; i <= maxRedirects; i++) {
+        Url u;
+        if (!parseUrl(cur, u)) { err = "bad url: " + url; return false; }
+        std::string body, location;
+        int status = 0;
+        if (!request(u, body, location, err, timeoutMs, userAgent, status, "GET", "",
+                     ifNoneMatch, ifModifiedSince)) return false;
+        if (status == 304) {
+            g_notModified = true;
+            stage("done");
+            outFinalUrl = u.toString();
+            return true;  // caller reuses its cache
+        }
+        if (status >= 300 && status < 400 && !location.empty()) {
+            // redirected: follow as a plain GET (revalidation already consumed)
+            cur = resolve(u, location);
+            cur = rewriteUrl(cur);
+            if (!parseUrl(cur, u)) { err = "bad redirect: " + cur; return false; }
             continue;
         }
         if (status != 200) { err = "http " + std::to_string(status); return false; }
