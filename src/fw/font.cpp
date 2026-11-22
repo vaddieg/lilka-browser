@@ -5,20 +5,25 @@
 
 namespace {
 // Regular UI text: 6x13. Titles/menu: 10x20 (the SDK's default font).
+// Scale 3 reuses the 10x20 glyphs magnified 2x (~40 px) via setTextSize.
 const uint8_t* fontData(uint8_t scale) {
     return (scale >= 2) ? u8g2_font_10x20_t_cyrillic : u8g2_font_6x13_t_cyrillic;
 }
 
 // u8g2 v1 font header (23 bytes): byte 13 = ascent (capital 'A' height).
 // The SDK reads these the same way.
-inline int16_t ascentOf(uint8_t scale) { return (int8_t)fontData(scale)[13]; }
+inline int16_t ascentOf(uint8_t scale) {
+    int16_t a = (int8_t)fontData(scale)[13];
+    return (scale >= 3) ? a * 2 : a;
+}
 
 Arduino_GFX* g_gfx = nullptr;
 
 void prep(Arduino_GFX* g, uint8_t scale) {
     g->setFont(fontData(scale));
     g->setUTF8Print(true);
-    g->setTextSize(1, 1);
+    if (scale >= 3) g->setTextSize(2, 2);
+    else g->setTextSize(1, 1);
     g->setTextWrap(false);  // we pre-truncate with fit(); no implicit wraps
 }
 }

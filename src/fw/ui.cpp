@@ -52,9 +52,12 @@ void wrapWords(const std::string& text, int16_t maxW, std::vector<std::string>& 
 
 void Browser::setButtons(Buttons* b) { btns_ = b; }
 
-int Browser::lineH() const { return fontScale_ >= 2 ? 22 : 15; }
+int Browser::lineH() const {
+    return fontScale_ >= 3 ? 42 : (fontScale_ >= 2 ? 22 : 15);
+}
 
 uint8_t Browser::lineScale(int lineIdx) const {
+    if (fontScale_ >= 3) return 3;
     if (fontScale_ >= 2) return 2;
     if (lineIdx >= 0 && lineIdx < (int)lines_.size()) {
         int bi = lines_[lineIdx].block;
@@ -66,7 +69,8 @@ uint8_t Browser::lineScale(int lineIdx) const {
 }
 
 int Browser::lineH(int lineIdx) const {
-    return lineScale(lineIdx) >= 2 ? 22 : 15;
+    uint8_t s = lineScale(lineIdx);
+    return s >= 3 ? 42 : (s >= 2 ? 22 : 15);
 }
 
 // Recent sites: saved history; if empty, a small built-in starter list.
@@ -82,13 +86,27 @@ std::vector<std::string> Browser::recentList() const {
     };
 }
 
+// Quick Start list: favorites first (marked '*'), then recent history.
+std::vector<std::string> Browser::quickList() const {
+    std::vector<std::string> out;
+    for (auto& f : store::favorites(4)) out.push_back("* " + f);
+    for (auto& u : recentList()) {
+        if (out.size() >= 8) break;
+        bool dup = false;
+        for (auto& e : out) if (e.find(u) != std::string::npos) dup = true;
+        if (!dup) out.push_back(u);
+    }
+    return out;
+}
+
 bool Browser::begin(Arduino_GFX* gfx) {
     gfx_ = gfx;
     font::begin(gfx);
     if (store::begin()) {
-        if (store::get("font", "1") == "2") fontScale_ = 2;
+        int fs = atoi(store::get("font", "1").c_str());
+        if (fs >= 1 && fs <= 3) fontScale_ = fs;
         net::loadCookieJar();
-        qsCache_ = recentList();
+        qsCache_ = quickList();
     }
     history_.push_back("");  // home slot
     currentUrl_ = "";
@@ -113,7 +131,9 @@ void Browser::buildLines() {
         char buf[64];
         switch (b.kind) {
             case BlockKind::Heading: {
-                uint8_t hscale = (fontScale_ >= 2 || b.level <= 4) ? 2 : 1;
+                // at scale 3 the base font is already the big one — headings
+                // just render in the base size (scale 2 would overflow)
+                uint8_t hscale = (fontScale_ >= 3) ? 3 : ((fontScale_ >= 2 || b.level <= 4) ? 2 : 1);
                 std::vector<std::string> ws;
                 wrapWords(b.text, maxW, ws, hscale);
                 for (auto& w : ws) lines_.push_back({i, w, false});
@@ -122,7 +142,7 @@ void Browser::buildLines() {
             case BlockKind::Text:
             case BlockKind::ListItem: {
                 // full text, no expand/collapse (A had no focusable target anyway)
-                uint8_t tscale = fontScale_ >= 2 ? 2 : 1;
+                uint8_t tscale = fontScale_ >= 3 ? 3 : (fontScale_ >= 2 ? 2 : 1);
                 std::string prefix = (b.kind == BlockKind::ListItem) ? std::string("- ") : "";
                 std::vector<std::string> ws;
                 wrapWords(prefix + b.text, maxW, ws, tscale);
@@ -136,11 +156,12 @@ void Browser::buildLines() {
             case BlockKind::Button:
                 lines_.push_back({i, b.text.empty() ? "OK" : b.text, false});
                 break;
-            case BlockKind::Input:
-                snprintf(buf, sizeof(buf), "[input] %s",
-                         b.placeholder.empty() ? b.name.c_str() : b.placeholder.c_str());
-                lines_.push_back({i, buf, false});
+            case BlockKind::Input: {
+                // caption only; renderPage draws the field rectangle around it
+                Line l{i, b.placeholder.empty() ? b.name : b.placeholder, false, true};
+                lines_.push_back(std::move(l));
                 break;
+            }
             case BlockKind::Table:
                 for (auto& r : b.rows) {
                     std::string t = r.k + (r.k.empty() ? "" : ": ") + r.v;
@@ -624,17 +645,16 @@ bool Browser::loop() {
             break;
         }
         case SETTINGS: {
-            static const char* items[] = {
-                "Font size", "Page cache", "Language", "Link list",
-            };
+            constexpr int nItems = 5;
             bool touched = false;
-            if (just(Buttons::UP)) { linklistSel_ = (linklistSel_ + 3) % 4; touched = true; }
-            else if (just(Buttons::DOWN)) { linklistSel_ = (linklistSel_ + 1) % 4; touched = true; }
+            if (just(Buttons::UP)) { linklistSel_ = (linklistSel_ + nItems - 1) % nItems; touched = true; }
+            else if (just(Buttons::DOWN)) { linklistSel_ = (linklistSel_ + 1) % nItems; touched = true; }
             else if (just(Buttons::A)) {
                 touched = true;
                 if (linklistSel_ == 0) {
-                    fontScale_ = fontScale_ == 1 ? 2 : 1;
-                    store::set("font", fontScale_ == 1 ? "1" : "2");
+                    // cycle small -> large -> extra large
+                    fontScale_ = (fontScale_ % 3) + 1;
+                    store::set("font", std::to_string(fontScale_));
                     buildLines();
                 } else if (linklistSel_ == 1) {
                     store::set("cache", store::get("cache", "1") == "1" ? "0" : "1");
@@ -645,6 +665,12 @@ bool Browser::loop() {
                     store::set("lang", nx);
                     net::setAcceptLanguage(nx == "uk" ? "uk,ru;q=0.8" :
                                            nx == "ru" ? "ru,en;q=0.8" : "en");
+                } else if (linklistSel_ == 3) {
+                    // add current page to favorites (shown in Quick Start)
+                    if (currentUrl_.rfind("http", 0) == 0) {
+                        store::addFavorite(currentUrl_);
+                        Serial.printf("[fav] added %s\n", currentUrl_.c_str());
+                    }
                 } else {
                     mode_ = LINKLIST;
                     linklistSel_ = 0;
@@ -662,9 +688,9 @@ bool Browser::loop() {
             if (just(Buttons::UP)) { linklistSel_ = (linklistSel_ + n) % (n + 1); dirty_ = true; act = true; }
             else if (just(Buttons::DOWN)) { linklistSel_ = (linklistSel_ + 1) % (n + 1); dirty_ = true; act = true; }
             else if (just(Buttons::A) || just(Buttons::START)) {
-                auto recent = recentList();
+                auto list = quickList();
                 if (linklistSel_ < n) {
-                    navigate(recent[linklistSel_]);
+                    navigate(list[linklistSel_]);
                 } else {
                     inputPurpose_ = "url";
                     inputFormAction_.clear();
@@ -731,16 +757,17 @@ bool Browser::loop() {
             case LINKLIST: renderLinkList(); break;
             case SETTINGS: {
                 std::vector<std::string> items = {
-                    std::string("Font: ") + (fontScale_ == 1 ? "small" : "large"),
+                    std::string("Font: ") + (fontScale_ == 1 ? "small" : fontScale_ == 2 ? "large" : "xl"),
                     std::string("Cache: ") + (store::get("cache", "1") == "1" ? "on" : "off"),
                     std::string("Language: ") + store::get("lang", "uk"),
+                    std::string("Favorite this page"),
                     std::string("Link list: enter"),
                 };
                 renderPopup("Settings (D)", items, linklistSel_);
                 break;
             }
             case QUICKSTART: {
-                qsCache_ = recentList();
+                qsCache_ = quickList();
                 qsCache_.push_back("Enter URL...");
                 renderPopup("Go (C)", qsCache_, linklistSel_);
                 break;
@@ -803,7 +830,16 @@ void Browser::renderPage() {
         }
         std::string t = l.text;
         if (l.pseudo) c = C_DIM;
-        font::text(gfx_, (i == sel_ ? 8 : 4), y, font::fit(t.c_str(), gfx_->width() - 10, scale), c, scale);
+        if (l.field) {
+            // input field: rectangle outline with the caption inside
+            int16_t x0 = (i == sel_) ? 8 : 4;
+            int16_t x1 = gfx_->width() - 4;
+            gfx_->drawRect(x0, y - 1, x1 - x0, lh, C_DIM);
+            font::text(gfx_, x0 + 4, y + (lh > 16 ? 3 : 0),
+                       font::fit(t.c_str(), (int16_t)(x1 - x0 - 8), scale), c, scale);
+        } else {
+            font::text(gfx_, (i == sel_) ? 8 : 4, y, font::fit(t.c_str(), gfx_->width() - 10, scale), c, scale);
+        }
         y += lh;
         vis++;
     }

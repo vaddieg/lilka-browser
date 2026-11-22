@@ -83,6 +83,43 @@ void addUrl(const std::string& url) {
     }
 }
 
+namespace {
+constexpr const char* kFavorites = "/browser/favorites.txt";
+}
+
+void addFavorite(const std::string& url) {
+    auto list = favorites(50);
+    if (!list.empty() && list[0] == url) return;
+    list.insert(list.begin(), url);
+    if (list.size() > 10) list.resize(10);
+    File f = SD.open(kFavorites, FILE_WRITE);
+    if (f) {
+        for (auto& u : list) { f.print(u.c_str()); f.println(); }
+        f.close();
+    }
+}
+
+std::vector<std::string> favorites(int max) {
+    std::vector<std::string> out;
+    File f = SD.open(kFavorites, FILE_READ);
+    if (!f) return out;
+    std::string line;
+    while (f.available() && out.size() < (size_t)max) {
+        line.clear();
+        char c;
+        while (f.readBytes(&c, 1) && c != '\n') line += c;
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+        if (!line.empty()) out.push_back(line);
+    }
+    f.close();
+    return out;
+}
+
+bool isFavorite(const std::string& url) {
+    for (auto& u : favorites(50)) if (u == url) return true;
+    return false;
+}
+
 std::vector<std::string> urls(int max) {
     std::vector<std::string> out;
     File f = SD.open(kHistory, FILE_READ);

@@ -14,6 +14,7 @@ struct Line {
     int block = -1;     // source block index (-1 for pseudo lines)
     std::string text;
     bool pseudo = false; // ellipsis / table / select line
+    bool field = false;  // input field: draw rectangle outline around caption
 };
 
 class Browser {
@@ -48,13 +49,14 @@ private:
     kb::Keyboard kb_;
     std::vector<std::string> qsCache_;  // Quick Access list (cached; avoids SD read per key)
     int qsSize() const { return (int)qsCache_.size(); }
+    std::vector<std::string> quickList() const;
     std::string inputPurpose_;   // "url" | field name
     std::string inputFormAction_;
     std::string inputFormMethod_;
     std::vector<std::pair<std::string, std::string>> inputFormFields_;
 
     // settings
-    int fontScale_ = 1;         // 1 = 13px, 2 = 20px
+    int fontScale_ = 1;         // 1 = 13px, 2 = 20px, 3 = 40px
 
     // derived
     int lineH() const;

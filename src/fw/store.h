@@ -18,6 +18,11 @@ void set(const std::string& key, const std::string& value);
 void addUrl(const std::string& url);
 std::vector<std::string> urls(int max = 10);
 
+/// Favorites: /browser/favorites.txt, newest first, dedup, capped.
+void addFavorite(const std::string& url);
+std::vector<std::string> favorites(int max = 10);
+bool isFavorite(const std::string& url);
+
 /// Cache helpers (v1: raw page cache keyed by URL hash).
 bool cachePut(const std::string& url, const std::string& html);
 bool cacheGet(const std::string& url, std::string& html);
