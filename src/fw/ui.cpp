@@ -743,7 +743,7 @@ bool Browser::loop() {
                 act = true;
                 break;
             }
-            kb_.update(*btns_);
+            if (kb_.update(*btns_)) { dirty_ = true; act = true; }
             if (kb_.isFinished()) {
                 std::string v = kb_.value();
                 if (inputPurpose_ == "url") {

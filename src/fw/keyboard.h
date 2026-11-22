@@ -28,7 +28,9 @@ public:
     const std::string& value() const { return value_; }
     bool isFinished();
 
-    void update(Buttons& btns);
+    /// Returns true if anything changed (cursor, text, layer, blink) and
+    /// the caller should redraw.
+    bool update(Buttons& btns);
     void draw(Arduino_GFX* gfx, const std::string& title) const;
 
 private:

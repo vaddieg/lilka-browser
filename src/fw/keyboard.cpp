@@ -99,8 +99,9 @@ void Keyboard::move(int dx, int dy) {
     }
 }
 
-void Keyboard::update(Buttons& btns) {
-    if (millis() - lastBlink > 300) { lastBlink = millis(); blink = !blink; }
+bool Keyboard::update(Buttons& btns) {
+    bool changed = false;
+    if (millis() - lastBlink > 300) { lastBlink = millis(); blink = !blink; changed = true; }
     if (btns.get(Buttons::A).justPressed) {
         int16_t k = keyAt(cx, cy);
         if (k == K_L0) layer = 0;
@@ -118,19 +119,24 @@ void Keyboard::update(Buttons& btns) {
             value_ += b;
         } else if (k) value_ += (char)k;
         lastBlink = millis(); blink = true;
+        changed = true;
     } else if (btns.get(Buttons::B).justPressed) {
         backspace();
+        changed = true;
     } else if (btns.get(Buttons::C).justPressed) {
         lang = (lang + 1) % 3;
         layer = 0;
+        changed = true;
     } else if (btns.get(Buttons::D).justPressed) {
         layer = (layer + 1) % 3;
+        changed = true;
     } else if (btns.get(Buttons::START).justPressed) {
         done = true;
-    } else if (btns.get(Buttons::UP).justPressed) move(0, -1);
-    else if (btns.get(Buttons::DOWN).justPressed) move(0, 1);
-    else if (btns.get(Buttons::LEFT).justPressed) move(-1, 0);
-    else if (btns.get(Buttons::RIGHT).justPressed) move(1, 0);
+    } else if (btns.get(Buttons::UP).justPressed) { move(0, -1); changed = true; }
+    else if (btns.get(Buttons::DOWN).justPressed) { move(0, 1); changed = true; }
+    else if (btns.get(Buttons::LEFT).justPressed) { move(-1, 0); changed = true; }
+    else if (btns.get(Buttons::RIGHT).justPressed) { move(1, 0); changed = true; }
+    return changed;
 }
 
 void Keyboard::draw(Arduino_GFX* gfx, const std::string& title) const {

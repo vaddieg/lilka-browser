@@ -79,13 +79,25 @@ public:
                 lastChange_[i] = now;
                 continue;
             }
-            if (now - lastChange_[i] < 10) continue;
             bool pressed = !digitalRead(pins_[i]);
-            if (pressed != st_[i].pressed) {
-                st_[i].pressed = pressed;
-                st_[i].justPressed = pressed;
-                st_[i].justReleased = !pressed;
-                lastChange_[i] = now;
+            if (pressed != raw_[i]) {
+                // physical edge vs last read. Record as candidate; it is
+                // committed below only if the level is still stable ~20ms
+                // later (rejects mechanical bounce). Edges that arrive <15ms
+                // after the last commit are bounces of it — dropped.
+                if (millis() - lastChange_[i] >= 15) {
+                    pending_[i] = pressed;
+                    pendingT_[i] = millis();
+                }
+                raw_[i] = pressed;
+                continue;
+            }
+            if (pending_[i] != st_[i].pressed &&
+                pressed == pending_[i] && millis() - pendingT_[i] >= 20) {
+                st_[i].pressed = pending_[i];
+                st_[i].justPressed = pending_[i];
+                st_[i].justReleased = !pending_[i];
+                lastChange_[i] = millis();
             }
         }
     }
@@ -108,7 +120,10 @@ private:
         hw::PIN_SELECT, hw::PIN_START,
     };
     State st_[COUNT];
+    bool raw_[COUNT] = {false};      // last read level (for edge detect)
+    bool pending_[COUNT] = {false};  // candidate level seen at an edge
     uint32_t lastChange_[COUNT] = {0};
+    uint32_t pendingT_[COUNT] = {0};
 };
 
 // This panel needs SPI_MODE3 (the official Lilka SDK forces it the same way).
