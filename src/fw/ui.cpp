@@ -194,10 +194,19 @@ void Browser::buildLines() {
     sel_ = -1;
 }
 
+
+
 void Browser::frameClickables(std::vector<int>& out) const {
     out.clear();
+    // same window math as renderPage so SELECT matches what is on screen
+    int cap = (gfx_->height() - kHeaderH - kFooterH) / lineH();
+    if (cap < 1) cap = 1;
+    int top = lineCursor_;
+    if (lineCursor_ >= cap) top = lineCursor_ - cap / 2;
+    if (top + cap > (int)lines_.size()) top = (int)lines_.size() - cap;
+    if (top < 0) top = 0;
     int y = kHeaderH + 4;
-    for (int i = lineCursor_; i < (int)lines_.size(); i++) {
+    for (int i = top; i < (int)lines_.size(); i++) {
         int lh = lineH(i);
         if (y + lh > gfx_->height() - kFooterH) break;
         if (clickable(i)) out.push_back(i);
@@ -628,31 +637,30 @@ bool Browser::loop() {
 
     switch (mode_) {
         case PAGE: {
+            // lineCursor_ is the selected line (highlighted). The visible
+            // window follows it (renderPage), so A always acts on exactly
+            // the line you see highlighted.
             int vis = (gfx_->height() - kHeaderH - kFooterH) / lineH();
-            if (just(Buttons::UP)) { lineCursor_ = std::max(0, lineCursor_ - 1); act = true; }
+            if (just(Buttons::UP)) { lineCursor_ = std::max(0, lineCursor_ - 1); sel_ = -1; act = true; }
             else if (just(Buttons::DOWN)) {
-                lineCursor_ = std::min((int)lines_.size() - 1, lineCursor_ + 1); act = true;
+                lineCursor_ = std::min((int)lines_.size() - 1, lineCursor_ + 1); sel_ = -1; act = true;
             } else if (just(Buttons::LEFT)) {
-                lineCursor_ = std::max(0, lineCursor_ - vis); act = true;
+                lineCursor_ = std::max(0, lineCursor_ - vis); sel_ = -1; act = true;
             } else if (just(Buttons::RIGHT)) {
-                lineCursor_ = std::min((int)lines_.size() - 1, lineCursor_ + vis); act = true;
+                lineCursor_ = std::min((int)lines_.size() - 1, lineCursor_ + vis); sel_ = -1; act = true;
             } else if (just(Buttons::SELECT)) {
+                // jump selection to the next interactive element (wraps)
                 std::vector<int> cl;
                 frameClickables(cl);
-                if (cl.empty()) act = true;
-                else {
+                if (!cl.empty()) {
                     size_t pos = 0;
-                    for (size_t i = 0; i < cl.size(); i++) if (cl[i] == sel_) pos = i;
-                    sel_ = cl[(pos + 1) % cl.size()];
-                    act = true;
+                    for (size_t i = 0; i < cl.size(); i++) if (cl[i] == lineCursor_) pos = i;
+                    lineCursor_ = cl[(pos + 1) % cl.size()];
                 }
+                sel_ = -1;
+                act = true;
             } else if (just(Buttons::START)) {
-                if (sel_ >= 0) activate(sel_);
-                else {
-                    std::vector<int> cl;
-                    frameClickables(cl);
-                    if (!cl.empty()) { sel_ = cl[0]; activate(sel_); }
-                }
+                activate(lineCursor_);
             } else if (just(Buttons::A)) {
                 // A = primary action on the element under the cursor:
                 // link/button -> activate, input -> keyboard, select -> cycle.
@@ -867,7 +875,15 @@ void Browser::renderPage() {
 
     int y = kHeaderH + 4;
     int vis = 0;
-    for (int i = lineCursor_; i < (int)lines_.size(); i++) {
+    int top = lineCursor_;
+    {  // keep the selection visible, roughly centered in the lower half
+        int cap = (gfx_->height() - kHeaderH - kFooterH) / lineH();
+        if (cap < 1) cap = 1;
+        if (lineCursor_ >= cap) top = lineCursor_ - cap / 2;
+        if (top + cap > (int)lines_.size()) top = (int)lines_.size() - cap;
+        if (top < 0) top = 0;
+    }
+    for (int i = top; i < (int)lines_.size(); i++) {
         int lh = lineH(i);
         if (y + lh > gfx_->height() - kFooterH) break;
         uint8_t scale = lineScale(i);
@@ -880,7 +896,7 @@ void Browser::renderPage() {
             if (k == BlockKind::Input || k == BlockKind::Select || k == BlockKind::Checkbox) c = 0xF800;
             if (k == BlockKind::Text && page_.blocks[l.block].bold) c = 0xFFFF;
         }
-        if (i == sel_) {
+        if (i == lineCursor_) {
             gfx_->fillRect(0, y - 1, gfx_->width(), lh, 0x1B37);
             gfx_->fillRect(0, y - 1, 3, lh, C_ACCENT);
         }
@@ -890,7 +906,7 @@ void Browser::renderPage() {
                        page_.blocks[l.block].kind == BlockKind::Checkbox;
         if (isCheck) {
             // checkbox glyph + label
-            int16_t bx = (i == sel_) ? 8 : 4;
+            int16_t bx = (i == lineCursor_) ? 8 : 4;
             int16_t by = y + (lh - 12) / 2;
             gfx_->fillRect(bx, by, 12, 12, 0x0000);
             gfx_->drawRect(bx, by, 12, 12, 0xC63F);
@@ -901,7 +917,7 @@ void Browser::renderPage() {
             font::text(gfx_, bx + 18, y, font::fit(t.c_str(), gfx_->width() - bx - 22, scale), c, scale);
         } else if (l.btn) {
             // button: filled box, centered label, beveled bottom edge
-            int16_t x0 = (i == sel_) ? 8 : 4;
+            int16_t x0 = (i == lineCursor_) ? 8 : 4;
             int16_t x1 = gfx_->width() - 4;
             int16_t bh = (lh > 18) ? lh - 2 : 16;
             int16_t by = y + (lh - bh) / 2;
@@ -914,13 +930,13 @@ void Browser::renderPage() {
                        font::fit(t.c_str(), (int16_t)(x1 - x0 - 6), scale), 0xFFFF, scale);
         } else if (l.field) {
             // input field: rectangle outline with the caption inside
-            int16_t x0 = (i == sel_) ? 8 : 4;
+            int16_t x0 = (i == lineCursor_) ? 8 : 4;
             int16_t x1 = gfx_->width() - 4;
             gfx_->drawRect(x0, y - 1, x1 - x0, lh, C_DIM);
             font::text(gfx_, x0 + 4, y + (lh > 16 ? 3 : 0),
                        font::fit(t.c_str(), (int16_t)(x1 - x0 - 8), scale), c, scale);
         } else {
-            font::text(gfx_, (i == sel_) ? 8 : 4, y, font::fit(t.c_str(), gfx_->width() - 10, scale), c, scale);
+            font::text(gfx_, (i == lineCursor_) ? 8 : 4, y, font::fit(t.c_str(), gfx_->width() - 10, scale), c, scale);
         }
         y += lh;
         vis++;
@@ -930,7 +946,7 @@ void Browser::renderPage() {
     }
     // footer
     font::text(gfx_, 4, gfx_->height() - kFooterH + 1,
-               "UD=scroll SEL=pick A=act B=back", C_DIM, 1);
+               "UD=move SEL=jump A=act B=back", C_DIM, 1);
 }
 
 void Browser::renderLinkList() {
