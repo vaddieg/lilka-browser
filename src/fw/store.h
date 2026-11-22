@@ -34,4 +34,13 @@ bool cookiesLoad(std::vector<std::string>& rows);
 void cookiesSave(const std::vector<std::string>& rows);
 void cookiesClear();
 
+/// File downloads: /browser/downloads/<name>
+struct FileEntry {
+    std::string name;
+    size_t size = 0;
+};
+bool saveDownload(const std::string& name, const std::string& data);
+std::vector<FileEntry> downloads(int max = 20);
+bool deleteDownload(const std::string& name);
+
 }  // namespace store

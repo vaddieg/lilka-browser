@@ -60,7 +60,9 @@ private:
     bool inTable_ = false;
     std::vector<std::vector<std::string>> tableRows_;
     std::vector<std::string> tableRow_;
+    std::vector<std::string> tableRowLinks_;  // parallel to tableRows_; "" = no link
     std::string cell_;
+    std::string curCellLink_;   // href of a link inside the current cell
     bool inCell_ = false;    // current <form action>, for buttons/inputs
 };
 

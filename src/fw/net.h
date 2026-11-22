@@ -37,6 +37,10 @@ const std::string& lastRawBody();
 /// Declared charset from the last response (may be empty).
 const std::string& lastCharset();
 
+/// Main MIME type of the last response ("text/html", "application/pdf", …;
+/// empty if none).
+const std::string& lastContentType();
+
 /// ETag / Last-Modified from the last 200 response (may be empty).
 const std::string& lastEtag();
 const std::string& lastModified();

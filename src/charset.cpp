@@ -154,8 +154,15 @@ std::string detect(const std::string& html, const std::string& httpCharset) {
     // look like legacy Cyrillic (high bytes in the 0xC0-0xFF range).
     if (validUtf8(html.data(), html.size())) return "utf8";
     bool high = false;
-    for (size_t i = 0; i < scan; i++)
-        if ((unsigned char)html[i] >= 0xC0) { high = true; break; }
+    bool binary = false;
+    for (size_t i = 0; i < scan; i++) {
+        unsigned char c = (unsigned char)html[i];
+        if (c >= 0xC0) high = true;
+        // NUL bytes and control chars (except tab/CR/LF) mean this is binary,
+        // not a legacy-encoded text page — never "transcode" it.
+        if (c == 0 || (c < 9 && c != 0) || (c > 13 && c < 32)) { binary = true; break; }
+    }
+    if (binary) return "utf8";
     return high ? "cp1251" : "utf8";
 }
 

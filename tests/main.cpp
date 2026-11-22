@@ -180,6 +180,19 @@ void test_tables() {
     CHECK(t.rows[2].v.find("8 MB") != std::string::npos);
 }
 
+void test_table_links() {
+    // markdown-flavored tables with a link in one cell: the row keeps the href
+    Page pg = parse("<table>"
+                    "<tr><td>ESP32</td><td>Yes</td><td><a href=\"https://ex.com/ds.pdf\">ESP32</a></td></tr>"
+                    "<tr><td>ESP32-C3</td><td>Yes</td><td>plain</td></tr>"
+                    "</table>");
+    CHECK(countKind(pg, BlockKind::Table) == 1);
+    const auto& t = pg.blocks[0];
+    CHECK(t.rows.size() == 2);
+    CHECK(t.rows[0].href == "https://ex.com/ds.pdf");
+    CHECK(t.rows[1].href.empty());
+}
+
 void test_select() {
     // design: options carry submit *values* (option value attr; falls back to text)
     Page pg = parse("<form><select name=\"sort\">"
@@ -352,6 +365,7 @@ int main(int argc, char** argv) {
     test_inputs_forms();
     test_checkboxes();
     test_tables();
+    test_table_links();
     test_select();
     test_lists();
     test_comments_and_malformed();

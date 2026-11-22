@@ -16,6 +16,7 @@ struct Line {
     bool pseudo = false; // ellipsis / table / select line
     bool field = false;  // input field: draw rectangle outline around caption
     bool btn = false;    // button: draw button box
+    std::string href;    // table row: link target (A opens it)
 };
 
 class Browser {
@@ -29,7 +30,7 @@ public:
 
 private:
     // state
-    enum Mode { PAGE, LINKLIST, SETTINGS, QUICKSTART, INPUTMODE, BUSY, ERROR };
+    enum Mode { PAGE, LINKLIST, SETTINGS, QUICKSTART, INPUTMODE, BUSY, ERROR, DONE, DOWNLOADS };
     Mode mode_ = PAGE;
     Mode inputFrom_ = PAGE;  // where to return when the keyboard is cancelled
 
@@ -45,6 +46,11 @@ private:
     std::vector<std::string> history_;   // navigation stack
     std::string currentUrl_;
     std::string errText_;
+    std::string doneText_;   // DONE screen message (downloaded file info)
+
+    // downloads list (DOWNLOADS mode)
+    int dlSel_ = 0;
+    bool dlConfirm_ = false;  // first A press arms delete, second confirms
 
     // input
     kb::Keyboard kb_;
@@ -87,6 +93,7 @@ private:
     void submitPost(const std::string& url, const std::vector<std::pair<std::string, std::string>>& fields,
                     const std::string& extraName, const std::string& extraValue);
     void finishLoad(const std::string& url, std::string html, const std::string& finalUrl);
+    void downloadFile(const std::string& url);   // fetch + save to /browser/downloads
 
     /// net::StageFn target — redraws the busy screen inline (fetch blocks the loop).
     void onStage(const char* s);
@@ -96,7 +103,10 @@ private:
     void renderLinkList();
     void renderPopup(const std::string& title, const std::vector<std::string>& items, int sel);
     void renderError();
+    void renderDone();
+    void renderDownloads();
     void renderBusy();
+    static bool isFileUrl(const std::string& url);
     void frameClickables(std::vector<int>& out) const;
 
     Arduino_GFX* gfx_ = nullptr;

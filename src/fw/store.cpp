@@ -221,4 +221,73 @@ void cookiesClear() {
     if (SD.exists(kCookies)) SD.remove(kCookies);
 }
 
+// ---------- file downloads ----------
+
+constexpr const char* kDownloads = "/browser/downloads";
+
+namespace {
+/// Only keep safe filename characters; collapse the rest to '_'.
+std::string sanitizeName(std::string n) {
+    for (auto& c : n)
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-'))
+            c = '_';
+    if (n.size() > 80) n = n.substr(n.size() - 80);  // keep the tail (extension)
+    if (n.empty() || n == ".") n = "download";
+    return n;
+}
+}  // namespace
+
+bool saveDownload(const std::string& nameIn, const std::string& data) {
+    if (!ensureDir()) return false;
+    if (!SD.exists(kDownloads)) SD.mkdir(kDownloads);
+    std::string name = sanitizeName(nameIn);
+    std::string path = std::string(kDownloads) + "/" + name;
+    int i = 1;
+    while (SD.exists(path.c_str())) {   // never clobber: name.ext -> name_1.ext
+        size_t dot = name.find_last_of('.');
+        std::string base = (dot == std::string::npos) ? name : name.substr(0, dot);
+        std::string ext  = (dot == std::string::npos) ? "" : name.substr(dot);
+        name = base + "_" + std::to_string(i++) + ext;
+        path = std::string(kDownloads) + "/" + name;
+    }
+    File f = SD.open(path.c_str(), FILE_WRITE);
+    if (!f) return false;
+    size_t off = 0;
+    while (off < data.size()) {
+        int n = f.write((const uint8_t*)data.data() + off, data.size() - off);
+        if (n <= 0) break;
+        off += (size_t)n;
+    }
+    bool ok = (off == data.size());
+    f.close();
+    return ok;
+}
+
+std::vector<FileEntry> downloads(int max) {
+    std::vector<FileEntry> out;
+    File dir = SD.open(kDownloads, FILE_READ);
+    if (!dir) return out;
+    while (true) {
+        File f = dir.openNextFile();
+        if (!f) break;
+        if (f.isDirectory()) { f.close(); continue; }
+        std::string nm = f.name();
+        if (!nm.empty() && nm.back() == '/') nm.pop_back();
+        FileEntry e;
+        e.name = nm;
+        e.size = (size_t)f.size();
+        f.close();
+        out.push_back(std::move(e));
+        if ((int)out.size() >= max) break;
+    }
+    dir.close();
+    return out;
+}
+
+bool deleteDownload(const std::string& name) {
+    std::string path = std::string(kDownloads) + "/" + sanitizeName(name);
+    return SD.remove(path.c_str());
+}
+
 }  // namespace store

@@ -9,6 +9,7 @@ but the same UX wins apply locally.
 - [x] **Compact / boilerplate mode** — Settings toggle; drops short generic nav/footer blocks ("Sign in", "Skip to content", …); e.g. Wikipedia 463→451 lines.
 - [x] **Charset sniffing (cp1251 + KOI8-R → UTF-8)** — honors `Content-Type` charset, then `<meta charset>`, then a UTF-8 validity heuristic; transcoded before parse; unit-tested.
 - [x] **ETag / Last-Modified revalidation** — cache stores validators; `If-None-Match`/`If-Modified-Since` on revisit; 304 reuses cache (verified live). Also fixed SD init (was never bound to the shared SPI bus — settings/cache/cookies were silently not persisting).
+- [x] **File downloads** — file links (by extension) and non-text responses (by Content-Type) are saved to `/browser/downloads/` instead of parsed; progress via busy screen; DONE screen; **Downloads** entry in Quick Start (UD=move, A=delete with confirm, B=back); never clobbers (name_1.ext); binary bodies are no longer charset-mangled (PNG verified byte-identical); table cells with links are clickable (datasheet tables).
 
 ## Navigation / UX
 - **Link list mode** (Opera Mini's "link list"): press a key to switch the frame to a

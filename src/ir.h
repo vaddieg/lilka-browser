@@ -22,6 +22,7 @@ enum class BlockKind {
 struct TableRow {
     std::string k;
     std::string v;
+    std::string href;  // optional: link found in a cell (A on the row opens it)
 };
 
 struct Block {

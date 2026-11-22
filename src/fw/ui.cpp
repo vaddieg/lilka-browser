@@ -88,15 +88,18 @@ std::vector<std::string> Browser::recentList() const {
 }
 
 // Quick Start list: favorites first (marked '*'), then recent history.
+constexpr const char* kDownloadsEntry = "Downloads";
+
 std::vector<std::string> Browser::quickList() const {
     std::vector<std::string> out;
-    out.reserve(9);
+    out.reserve(10);
+    out.push_back(kDownloadsEntry);   // first entry: saved files
     for (auto& f : store::favorites(6)) {
         out.push_back(f);
-        if (out.size() >= 8) break;
+        if (out.size() >= 9) break;
     }
     for (auto& u : recentList()) {
-        if (out.size() >= 8) break;
+        if (out.size() >= 9) break;
         bool dup = false;
         for (auto& e : out) if (e == u) dup = true;
         if (!dup) out.push_back(u);
@@ -124,6 +127,7 @@ bool Browser::begin(Arduino_GFX* gfx) {
 bool Browser::clickable(int lineIdx) const {
     if (lineIdx < 0 || lineIdx >= (int)lines_.size()) return false;
     const Line& l = lines_[lineIdx];
+    if (!l.href.empty()) return true;   // table row with a link
     if (l.block < 0 || l.block >= (int)page_.blocks.size()) return false;
     auto k = page_.blocks[l.block].kind;
     return k == BlockKind::Link || k == BlockKind::Button ||
@@ -246,7 +250,7 @@ void Browser::buildLines() {
             case BlockKind::Table:
                 for (auto& r : b.rows) {
                     std::string t = r.k + (r.k.empty() ? "" : ": ") + r.v;
-                    lines_.push_back({i, t, true});
+                    lines_.push_back({i, t, true, false, false, r.href});
                 }
                 break;
             case BlockKind::Select: {
@@ -331,6 +335,14 @@ std::vector<std::pair<std::string, std::string>> Browser::withChecksFields(
 
 // Transcode a fetched body to UTF-8 in place if it came in a legacy
 // single-byte encoding (cp1251/KOI8-R). No-op when already UTF-8.
+// True when the last response is renderable text (page cache is for HTML only).
+static bool isTextResponse() {
+    std::string ct = net::lastContentType();
+    for (auto& ch : ct) ch = (char)tolower((unsigned char)ch);
+    return ct.empty() || ct.rfind("text/", 0) == 0 ||
+           ct == "application/json" || ct == "image/svg+xml";
+}
+
 static void transcodeToUtf8(std::string& html) {
     std::string enc = lilka::charset::detect(html, net::lastCharset());
     if (enc != "utf8") {
@@ -388,8 +400,10 @@ void Browser::navigate(const std::string& urlIn, bool fromRedirect) {
             net::Client c;
             if (c.get(url, html, finalUrl, err)) {
                 Serial.printf("[nav] got %u bytes\n", (unsigned)html.size());
-                transcodeToUtf8(html);
-                store::cachePut(finalUrl, html, net::lastEtag(), net::lastModified());
+                if (isTextResponse()) {
+                    transcodeToUtf8(html);   // never touch binary bodies
+                    store::cachePut(finalUrl, html, net::lastEtag(), net::lastModified());
+                }
             }
         }
     } else if (canRevalidate) {
@@ -405,9 +419,11 @@ void Browser::navigate(const std::string& urlIn, bool fromRedirect) {
                     Serial.printf("[nav] 304 — reuse cache (%u bytes)\n", (unsigned)cachedHtml.size());
                     html = std::move(cachedHtml);
                 } else {
-                    transcodeToUtf8(html);
                     Serial.printf("[nav] 200 refreshed %u bytes\n", (unsigned)html.size());
-                    store::cachePut(finalUrl, html, net::lastEtag(), net::lastModified());
+                    if (isTextResponse()) {
+                        transcodeToUtf8(html);   // never touch binary bodies
+                        store::cachePut(finalUrl, html, net::lastEtag(), net::lastModified());
+                    }
                 }
             } else if (haveCache) {
                 // network/HTTP failure but we have a copy — serve it stale
@@ -493,6 +509,40 @@ static std::string findAutoRedirect(const std::string& html) {
 }
 
 void Browser::finishLoad(const std::string& url, std::string html, const std::string& finalUrl) {
+    // server handed us a non-text payload (pdf/zip/image/…): save it, don't
+    // try to parse binary as HTML
+    {
+        std::string ct = net::lastContentType();
+        for (auto& ch : ct) ch = (char)tolower((unsigned char)ch);
+        bool isText = ct.empty() || ct.rfind("text/", 0) == 0 ||
+                      ct == "application/json" || ct == "image/svg+xml";
+        if (!isText) {
+            Serial.printf("[nav] non-text response (%s) -> save as download\n", ct.c_str());
+            std::string name;
+            {
+                std::string u = finalUrl.empty() ? url : finalUrl;
+                size_t q = u.find_first_of("?#");
+                if (q != std::string::npos) u = u.substr(0, q);
+                size_t slash = u.find_last_of('/');
+                name = (slash == std::string::npos) ? u : u.substr(slash + 1);
+            }
+            if (name.empty() || name.find('.') == std::string::npos) name += ".bin";
+            if (store::saveDownload(name, html)) {
+                char sz[32];
+                snprintf(sz, sizeof sz, html.size() >= 1048576 ? "%u.%uMB" : "%uKB",
+                         (unsigned)(html.size() / (html.size() >= 1048576 ? 1048576 : 1024)),
+                         html.size() >= 1048576 ? (unsigned)((html.size() / 102400) % 10) : 0u);
+                doneText_ = std::string(name) + " (" + sz + ")\n" + "/browser/downloads/" + name;
+                mode_ = DONE;
+                dirty_ = true;
+                return;
+            }
+            errText_ = "save failed (SD card?)";
+            mode_ = ERROR;
+            dirty_ = true;
+            return;
+        }
+    }
     // a new page invalidates any in-page find
     findActive_ = false; findTerm_.clear(); findMatches_.clear();
     // no-JS redirect stubs (e.g. DuckDuckGo result links): follow the target
@@ -582,6 +632,30 @@ void Browser::serialCmd(const std::string& in) {
         Serial.printf("[cmd] sel=%d\n", linklistSel_);
         for (size_t i = 0; i < l.size(); i++)
             Serial.printf("[cmd] qs[%u]: %s\n", (unsigned)i, l[i].empty() ? "(Enter URL)" : l[i].c_str());
+        return;
+    }
+    if (line == "dl") {
+        auto l = store::downloads(20);
+        Serial.printf("[cmd] downloads: %u\n", (unsigned)l.size());
+        for (size_t i = 0; i < l.size(); i++)
+            Serial.printf("[cmd] dl[%u]: %s %u bytes\n", (unsigned)i, l[i].name.c_str(), (unsigned)l[i].size);
+        return;
+    }
+    if (line.rfind("dldel", 0) == 0) {
+        std::string i = line.substr(5);
+        while (!i.empty() && i.front() == ' ') i.erase(i.begin());
+        int idx = atoi(i.c_str());
+        auto l = store::downloads(20);
+        if (idx >= 0 && idx < (int)l.size()) {
+            bool ok = store::deleteDownload(l[idx].name);
+            Serial.printf("[cmd] dldel %s %s\n", l[idx].name.c_str(), ok ? "ok" : "FAIL");
+        } else Serial.printf("[cmd] dldel bad index\n");
+        return;
+    }
+    if (line.rfind("dlfile", 0) == 0) {
+        std::string url = line.substr(6);
+        while (!url.empty() && url.front() == ' ') url.erase(url.begin());
+        if (!url.empty()) downloadFile(url);
         return;
     }
     if (line.rfind("key", 0) == 0) {
@@ -798,6 +872,17 @@ void Browser::goBack() {
 void Browser::activate(int lineIdx) {
     Serial.printf("[ui] activate line=%d\n", lineIdx);
     if (lineIdx < 0) return;
+    // table row carrying a link (e.g. datasheet tables)
+    if (!lines_[lineIdx].href.empty()) {
+        std::string target = lines_[lineIdx].href;
+        if (target[0] == '/' || (target[0] == '.' && target[1] == '/')) {
+            net::Url u;
+            if (net::parseUrl(currentUrl_, u)) target = net::resolve(u, target);
+        }
+        if (isFileUrl(target)) downloadFile(target);
+        else navigate(target);
+        return;
+    }
     const auto& b = page_.blocks[lines_[lineIdx].block];
     if (b.kind == BlockKind::Link && !b.href.empty()) {
         std::string target = b.href;
@@ -805,7 +890,8 @@ void Browser::activate(int lineIdx) {
             net::Url u;
             if (net::parseUrl(currentUrl_, u)) target = net::resolve(u, target);
         }
-        navigate(target);
+        if (isFileUrl(target)) downloadFile(target);
+        else navigate(target);
     } else if (b.kind == BlockKind::Button) {
         std::string target = b.href.empty() ? b.formAction : b.href;
         if (!target.empty()) {
@@ -993,6 +1079,8 @@ bool Browser::loop() {
                     kb_.reset();
                     inputFrom_ = QUICKSTART;
                     mode_ = INPUTMODE;
+                } else if (linklistSel_ < n && list[linklistSel_] == kDownloadsEntry) {
+                    mode_ = DOWNLOADS; dlSel_ = 0; dlConfirm_ = false;
                 } else if (linklistSel_ < n) {
                     navigate(list[linklistSel_]);
                 }
@@ -1063,6 +1151,31 @@ bool Browser::loop() {
             }
             break;
         }
+        case DONE: {
+            if (just(Buttons::B)) { mode_ = PAGE; act = true; }
+            else if (just(Buttons::C)) { mode_ = QUICKSTART; linklistSel_ = 0; act = true; }
+            else if (just(Buttons::D)) { mode_ = DOWNLOADS; dlSel_ = 0; dlConfirm_ = false; act = true; }
+            break;
+        }
+        case DOWNLOADS: {
+            int n = (int)store::downloads(10).size();
+            if (just(Buttons::UP)) { dlSel_ = (dlSel_ + n) % (n ? n : 1); dlConfirm_ = false; act = true; }
+            else if (just(Buttons::DOWN)) { dlSel_ = (dlSel_ + 1) % (n ? n : 1); dlConfirm_ = false; act = true; }
+            else if (just(Buttons::B)) { mode_ = PAGE; dlConfirm_ = false; act = true; }
+            else if (just(Buttons::A)) {
+                if (n == 0) break;
+                auto list = store::downloads(10);
+                if (!dlConfirm_) { dlConfirm_ = true; act = true; }
+                else {
+                    if (store::deleteDownload(list[dlSel_].name))
+                        Serial.printf("[dl] deleted %s\n", list[dlSel_].name.c_str());
+                    dlConfirm_ = false;
+                    dlSel_ = 0;
+                    act = true;
+                }
+            }
+            break;
+        }
     }
 
     if (act) dirty_ = true;
@@ -1095,6 +1208,8 @@ bool Browser::loop() {
                 break;
             case BUSY: renderBusy(); break;
             case ERROR: renderError(); break;
+            case DONE: renderDone(); break;
+            case DOWNLOADS: renderDownloads(); break;
         }
         dirty_ = false;
         drew = true;
@@ -1275,6 +1390,144 @@ void Browser::renderError() {
         y += lineH();
     }
     font::text(gfx_, 4, gfx_->height() - kFooterH + 1, "B=back C=home D=settings", C_DIM, 1);
+}
+
+void Browser::renderDone() {
+    gfx_->fillScreen(0x0000);
+    gfx_->fillRect(0, 0, gfx_->width(), kHeaderH, 0x1D6);
+    font::text(gfx_, 6, 3, "Done", 0xFFFF, 1);
+    std::vector<std::string> ws;
+    wrapWords(doneText_, gfx_->width() - 12, ws);
+    int y = kHeaderH + 10;
+    for (auto& w : ws) {
+        font::text(gfx_, 8, y, font::fit(w.c_str(), gfx_->width() - 12, 1), 0xFFFF, 1);
+        y += lineH();
+    }
+    font::text(gfx_, 4, gfx_->height() - kFooterH + 1, "B=back C=home", C_DIM, 1);
+}
+
+void Browser::renderDownloads() {
+    gfx_->fillScreen(0x0000);
+    gfx_->fillRect(0, 0, gfx_->width(), kHeaderH, 0x404080);
+    font::text(gfx_, 6, 3, "Downloads", 0xFFFF, 1);
+    auto list = store::downloads(10);
+    if (list.empty()) {
+        font::text(gfx_, 8, kHeaderH + 10, "(empty)", C_DIM, 1);
+    } else {
+        if (dlSel_ >= (int)list.size()) dlSel_ = 0;
+        int y = kHeaderH + 2;
+        int h = gfx_->height() - kHeaderH - kFooterH;
+        int per = h / lineH();
+        int start = dlSel_ > per / 2 ? dlSel_ - per / 2 : 0;
+        if (start + per > (int)list.size()) start = (int)list.size() - per;
+        if (start < 0) start = 0;
+        for (int i = start; i < start + per && i < (int)list.size(); i++) {
+            const auto& e = list[i];
+            char sz[24];
+            snprintf(sz, sizeof sz, e.size >= 1048576 ? "%u.%uMB" : "%uKB",
+                     (unsigned)(e.size / (e.size >= 1048576 ? 1048576 : 1024)),
+                     e.size >= 1048576 ? (unsigned)((e.size / 102400) % 10) : 0u);
+            std::string label = font::fit(e.name.c_str(), gfx_->width() - 56, 1);
+            label += "  ";
+            label += sz;
+            uint16_t bg = (i == dlSel_) ? 0x404080 : 0x0000;
+            uint16_t fg = (i == dlSel_) ? 0xFFFF : 0xDDDD;
+            if (bg) gfx_->fillRect(0, y, gfx_->width(), lineH(), bg);
+            font::text(gfx_, 6, y, label.c_str(), fg, 1);
+            y += lineH();
+        }
+    }
+    std::string hint = dlConfirm_ ? std::string("A=confirm delete") :
+        ((int)store::downloads(1).size() ? "UD=move A=del B=back" : "B=back");
+    font::text(gfx_, 4, gfx_->height() - kFooterH + 1, hint.c_str(), C_DIM, 1);
+}
+
+bool Browser::isFileUrl(const std::string& url) {
+    // strip query/fragment
+    std::string u = url;
+    for (char ch : "?#") {
+        size_t p = u.find(ch);
+        if (p != std::string::npos) u = u.substr(0, p);
+    }
+    // last path segment
+    size_t slash = u.find_last_of('/');
+    std::string name = (slash == std::string::npos) ? u : u.substr(slash + 1);
+    size_t dot = name.find_last_of('.');
+    if (dot == std::string::npos || dot == name.size() - 1) return false;
+    std::string ext = name.substr(dot + 1);
+    for (auto& c : ext) c = (char)tolower((unsigned char)c);
+    static const char* kExt[] = {
+        "zip", "tar", "gz", "tgz", "7z", "rar", "bz2", "xz", "pdf", "txt", "md",
+        "csv", "json", "xml", "bin", "hex", "elf", "uf2", "mp3", "wav", "ogg",
+        "png", "jpg", "jpeg", "gif", "webp", "svg", "ttf", "otf", "woff", "woff2",
+        "exe", "dmg", "apk", "deb", "rpm", "iso", "webm", "mp4",
+    };
+    for (auto* e : kExt) if (ext == e) return true;
+    return false;
+}
+
+void Browser::downloadFile(const std::string& urlIn) {
+    std::string url = net::rewriteUrl(urlIn);
+    Serial.printf("[dl] download: %s\n", url.c_str());
+
+    net::setStageFn([](const char* s) { g_browser.onStage(s); });
+    busyStage_ = "start";
+    busyUrl_ = url;
+    busyT0_ = millis();
+    mode_ = BUSY;
+    dirty_ = true;
+    renderBusy();
+    gfx_->flush();
+
+    std::string err, data, finalUrl;
+    bool ok = false;
+    std::string ssid, pass;
+    if (!net::wifiCreds(ssid, pass)) err = "no wifi creds (set up in Keira)";
+    else if (WiFi.status() != WL_CONNECTED && !net::connect(ssid, pass, 20000)) err = "wifi connect failed";
+    else {
+        net::Client c;
+        if (c.get(url, data, finalUrl, err, 60000)) {
+            std::string ct = net::lastContentType();
+            for (auto& ch : ct) ch = (char)tolower((unsigned char)ch);
+            // text responses (e.g. .txt/.json served as text/*) are fine to keep as-is
+            Serial.printf("[dl] got %u bytes ct=%s\n", (unsigned)data.size(), ct.c_str());
+            ok = true;
+        }
+    }
+
+    if (!ok) {
+        errText_ = err.empty() ? std::string("download failed") : err;
+        mode_ = ERROR;
+        dirty_ = true;
+        return;
+    }
+
+    // filename from the final URL's last path segment
+    std::string name;
+    {
+        std::string u = finalUrl.empty() ? url : finalUrl;
+        size_t q = u.find_first_of("?#");
+        if (q != std::string::npos) u = u.substr(0, q);
+        size_t slash = u.find_last_of('/');
+        name = (slash == std::string::npos) ? u : u.substr(slash + 1);
+    }
+    if (name.empty() || name.find('.') == std::string::npos) name += ".bin";
+
+    if (!store::saveDownload(name, data)) {
+        errText_ = "save failed (SD card?)";
+        mode_ = ERROR;
+        dirty_ = true;
+        return;
+    }
+
+    char sz[32];
+    snprintf(sz, sizeof sz, data.size() >= 1048576 ? "%u.%uMB" : "%uKB",
+             (unsigned)(data.size() / (data.size() >= 1048576 ? 1048576 : 1024)),
+             data.size() >= 1048576 ? (unsigned)((data.size() / 102400) % 10) : 0u);
+    doneText_ = std::string(name) + " (" + sz + ")\n" + "/browser/downloads/" + name;
+    Serial.printf("[dl] saved %s (%u bytes)\n", name.c_str(), (unsigned)data.size());
+    mode_ = DONE;
+    dirty_ = true;
 }
 
 }  // namespace ui

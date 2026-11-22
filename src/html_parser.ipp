@@ -176,9 +176,11 @@ void Parser::emitTable() {
     if (tableRows_.empty()) return;
     Block blk;
     blk.kind = BlockKind::Table;
-    for (auto& r : tableRows_) {
-        TableRow tr;
+    size_t n = tableRows_.size();
+    for (size_t ri = 0; ri < n; ri++) {
+        const auto& r = tableRows_[ri];
         if (r.empty()) continue;
+        TableRow tr;
         if (r.size() == 1) {
             tr.v = trimCollapse(r[0]);
         } else {
@@ -190,9 +192,11 @@ void Parser::emitTable() {
             }
             tr.v = trimCollapse(v);
         }
+        if (ri < tableRowLinks_.size()) tr.href = tableRowLinks_[ri];
         if (!tr.k.empty() || !tr.v.empty()) blk.rows.push_back(std::move(tr));
     }
     tableRows_.clear();
+    tableRowLinks_.clear();
     if (!blk.rows.empty() && page_.blocks.size() < kMaxBlocks) page_.blocks.push_back(std::move(blk));
 }
 
@@ -410,6 +414,12 @@ void Parser::feed(const char* data, size_t len) {
                     Ctx cx;
                     cx.kind = Ctx::Link;
                     cx.href = unescapeAttr(attrValue(body, "href"));
+                    if (inCell_) {
+                        // link inside a table cell: capture its href for the row
+                        if (!cx.href.empty()) curCellLink_ = cx.href;
+                        flushText();
+                        continue;
+                    }
                     openCtx(cx);
                     continue;
                 }
@@ -560,14 +570,27 @@ void Parser::feed(const char* data, size_t len) {
             if (name == "td" || name == "th") {
                 if (inTable_ && inCell_) {
                     inCell_ = false;
-                    std::string c = trimCollapse(cell_);
-                    if (!c.empty()) tableRow_.push_back(std::move(c));
+                    // a link inside the cell wins over the cell text
+                    if (ctx_.kind == Ctx::Link && !ctx_.href.empty()) {
+                        curCellLink_ = ctx_.href;
+                    } else {
+                        std::string c = trimCollapse(cell_);
+                        if (!c.empty()) tableRow_.push_back(std::move(c));
+                    }
+                    cell_.clear();
+                    ctx_ = Ctx{}; ctx_.kind = Ctx::None;
                 }
                 continue;
             }
             if (name == "tr" && inTable_) {
-                if (!tableRow_.empty()) tableRows_.push_back(std::move(tableRow_));
+                if (!tableRow_.empty() || !curCellLink_.empty())
+                    tableRows_.push_back(std::move(tableRow_));
+                if (!curCellLink_.empty())
+                    tableRowLinks_.push_back(std::move(curCellLink_));
+                else
+                    tableRowLinks_.push_back("");
                 tableRow_.clear();
+                curCellLink_.clear();
                 continue;
             }
             if (name == "table") { emitTable(); continue; }

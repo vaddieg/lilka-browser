@@ -354,6 +354,7 @@ bool Client::open(const Url& u, int timeoutMs, WiFiClientSecure& client, std::st
 namespace {
 std::string g_lastRaw;
 std::string g_charset;   // declared charset from the last response (may be empty)
+std::string g_contentType;  // main type of the last response (e.g. "application/pdf")
 std::string g_etag;
 std::string g_lastModified;
 bool g_notModified = false;
@@ -362,6 +363,8 @@ bool g_notModified = false;
 const std::string& lastRawBody() { return g_lastRaw; }
 
 const std::string& lastCharset() { return g_charset; }
+
+const std::string& lastContentType() { return g_contentType; }
 
 const std::string& lastEtag() { return g_etag; }
 
@@ -572,6 +575,12 @@ bool Client::request(const Url& u, std::string& body, std::string& location,
     {
         std::string ct = contentType;
         for (auto& ch : ct) ch = (char)tolower((unsigned char)ch);
+        size_t semi = ct.find(';');
+        if (semi != std::string::npos) ct = ct.substr(0, semi);
+        size_t ws = ct.find_last_not_of(" \t");
+        if (ws != std::string::npos) ct = ct.substr(0, ws + 1);
+        g_contentType = ct;
+
         size_t c = ct.find("charset=");
         if (c != std::string::npos) {
             size_t i = c + 8;
