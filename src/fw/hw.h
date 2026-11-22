@@ -92,8 +92,13 @@ public:
                 raw_[i] = pressed;
                 continue;
             }
+            // Commit once the level has been stable ~15ms. The main loop
+            // samples every ~15ms, so this is one extra stable sample — enough
+            // to reject mechanical bounce (~5-10ms) without dropping quick taps.
+            // (Was 20ms, which lost short clicks whenever the loop ran slow, e.g.
+            // while redrawing + SPI-flushing the error/busy screens.)
             if (pending_[i] != st_[i].pressed &&
-                pressed == pending_[i] && millis() - pendingT_[i] >= 20) {
+                pressed == pending_[i] && millis() - pendingT_[i] >= 15) {
                 st_[i].pressed = pending_[i];
                 st_[i].justPressed = pending_[i];
                 st_[i].justReleased = !pending_[i];

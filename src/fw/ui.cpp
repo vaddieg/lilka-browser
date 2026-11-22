@@ -965,11 +965,16 @@ bool Browser::loop() {
         }
         case BUSY:
         case ERROR: {
+            // Static screens: redraw ONLY on a state change. Redrawing (and
+            // SPI-flushing) every loop made the loop period far exceed the
+            // 20ms debounce window, so short B clicks were missed — the user
+            // had to mash the key. onStage() already redraws the busy screen
+            // inline during the blocking fetch.
             if (just(Buttons::B)) {
                 if (mode_ == ERROR && history_.size() > 1) goBack();
                 else { mode_ = PAGE; }
+                act = true;
             }
-            act = true;
             break;
         }
     }
