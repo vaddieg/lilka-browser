@@ -341,7 +341,8 @@ static void transcodeToUtf8(std::string& html) {
     }
 }
 
-void Browser::navigate(const std::string& urlIn) {
+void Browser::navigate(const std::string& urlIn, bool fromRedirect) {
+    if (!fromRedirect) redirDepth_ = 0;  // user-initiated: reset hop budget
     std::string url = urlIn;
     while (!url.empty() && (unsigned char)url.back() < 32) url.pop_back();
     while (!url.empty() && (unsigned char)url.front() < 32) url.erase(url.begin());
@@ -429,9 +430,84 @@ void Browser::navigate(const std::string& urlIn) {
     finishLoad(url, html, finalUrl);
 }
 
+// Find an auto-redirect target in the raw HTML (no-JS fallbacks we must
+// honor ourselves):
+//   1. <meta http-equiv="refresh" content="0; url=...">  (any delay)
+//   2. JS stubs: location.replace("...") / location.href = '...'
+// Returns "" when none found. Decodes &amp; etc. in the target.
+static std::string findAutoRedirect(const std::string& html) {
+    std::string h = html;
+    for (auto& c : h) c = (char)tolower((unsigned char)c);
+
+    auto extractQuoted = [&](size_t i, const std::string& s) {
+        if (i >= s.size()) return std::string();
+        if (s[i] == '"' || s[i] == '\'') i++;
+        size_t e = s.find_first_of("\"'", i);
+        std::string v = (e == std::string::npos) ? s.substr(i) : s.substr(i, e - i);
+        // entity-decode &amp; (DDG hrefs carry &amp;rut=...)
+        std::string out;
+        for (size_t k = 0; k < v.size(); k++) {
+            if (v.compare(k, 5, "&amp;") == 0) { out += '&'; k += 4; }
+            else out += v[k];
+        }
+        return out;
+    };
+
+    // 1) meta refresh
+    size_t m = h.find("http-equiv");
+    while (m != std::string::npos) {
+        size_t seg = h.find('>', m);
+        size_t len = (seg == std::string::npos) ? 300 : std::min<size_t>(seg - m, 300);
+        std::string tag = h.substr(m, len);
+        if (tag.find("refresh") != std::string::npos) {
+            size_t c = tag.find("content=");
+            if (c != std::string::npos) {
+                std::string content = extractQuoted(c + 8, tag);
+                size_t u = content.find("url=");
+                if (u != std::string::npos) {
+                    std::string t = content.substr(u + 4);
+                    while (!t.empty() && (t.front() == ' ' || t.front() == '\t')) t.erase(t.begin());
+                    if (t.rfind("http://", 0) == 0 || t.rfind("https://", 0) == 0) return t;
+                }
+            }
+        }
+        m = h.find("http-equiv", m + 1);
+    }
+
+    // 2) JS location stubs — only on tiny stub pages, so a large page with an
+    //    incidental location.href in its scripts can't trigger a false redirect
+    if (html.size() > 8192) return "";
+    const char* pats[] = { "location.replace(", "location.href=", "location.href =" };
+    for (auto* pat : pats) {
+        size_t p = h.find(pat);
+        while (p != std::string::npos) {
+            size_t q = h.find_first_of("\"'", p + strlen(pat));
+            if (q != std::string::npos && q - p < 60) {
+                std::string t = extractQuoted(q, h);
+                if (t.rfind("http://", 0) == 0 || t.rfind("https://", 0) == 0) return t;
+            }
+            p = h.find(pat, p + 1);
+        }
+    }
+    return "";
+}
+
 void Browser::finishLoad(const std::string& url, std::string html, const std::string& finalUrl) {
     // a new page invalidates any in-page find
     findActive_ = false; findTerm_.clear(); findMatches_.clear();
+    // no-JS redirect stubs (e.g. DuckDuckGo result links): follow the target
+    {
+        std::string redir = findAutoRedirect(html);
+        if (!redir.empty()) {
+            if (redirDepth_ < 5 && redir != url) {
+                Serial.printf("[nav] auto-redirect hop %d -> %s\n", redirDepth_ + 1, redir.c_str());
+                redirDepth_++;
+                navigate(redir, true);   // keep the hop budget across stubs
+                return;
+            }
+            Serial.printf("[nav] auto-redirect loop, stopping at %s\n", url.c_str());
+        }
+    }
     // parse
     Serial.printf("[nav] parsing...\n");
     lilka::html::Parser p;
@@ -625,7 +701,10 @@ void Browser::serialCmd(const std::string& in) {
     if (line.rfind("goto", 0) == 0) {
         std::string url = line.substr(4);
         while (!url.empty() && url.front() == ' ') url.erase(url.begin());
-        if (url.size() > 4 && url.rfind("http", 0) != 0) url = "https://" + url;
+        // A space means it's a search query — pass through so navigate()
+        // routes it to DuckDuckGo. Otherwise treat as a bare host and add https.
+        bool isSearch = url.find(' ') != std::string::npos && url.rfind("http", 0) != 0;
+        if (!isSearch && url.rfind("http", 0) != 0 && url.size() > 4) url = "https://" + url;
         if (!url.empty()) navigate(url);
     } else if (line == "back") {
         goBack();

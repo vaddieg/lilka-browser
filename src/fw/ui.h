@@ -62,6 +62,8 @@ private:
     bool compact_ = false;      // drop boilerplate nav/footer blocks (small-screen win)
     bool isBoilerplate(const lilka::Block& b) const;
 
+    int redirDepth_ = 0;   // auto-redirect hop budget (no-JS redirect stubs)
+
     // in-page find
     std::string findTerm_;
     std::vector<int> findMatches_;  // line indices (into lines_)
@@ -77,7 +79,7 @@ private:
     std::vector<std::string> recentList() const;
     bool clickable(int lineIdx) const;
     void buildLines();
-    void navigate(const std::string& url);
+    void navigate(const std::string& url, bool fromRedirect = false);
     std::vector<std::pair<std::string, std::string>> withChecks(const lilka::Block& b) const;
     std::vector<std::pair<std::string, std::string>> withChecksFields(
             const std::vector<std::pair<std::string, std::string>>& base,
