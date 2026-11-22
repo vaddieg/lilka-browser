@@ -125,7 +125,8 @@ bool Browser::clickable(int lineIdx) const {
     if (l.block < 0 || l.block >= (int)page_.blocks.size()) return false;
     auto k = page_.blocks[l.block].kind;
     return k == BlockKind::Link || k == BlockKind::Button ||
-           k == BlockKind::Input || k == BlockKind::Select;
+           k == BlockKind::Input || k == BlockKind::Select ||
+           k == BlockKind::Checkbox;
 }
 
 void Browser::buildLines() {
@@ -159,15 +160,20 @@ void Browser::buildLines() {
                 lines_.push_back({i, b.text, false});
                 links_.emplace_back(b.text, b.href);
                 break;
-            case BlockKind::Button:
-                lines_.push_back({i, b.text.empty() ? "OK" : b.text, false});
+            case BlockKind::Button: {
+                Line l{i, b.text.empty() ? "OK" : b.text, false, false, true};
+                lines_.push_back(std::move(l));
                 break;
+            }
             case BlockKind::Input: {
                 // caption only; renderPage draws the field rectangle around it
                 Line l{i, b.placeholder.empty() ? b.name : b.placeholder, false, true};
                 lines_.push_back(std::move(l));
                 break;
             }
+            case BlockKind::Checkbox:
+                lines_.push_back({i, b.text, false});  // glyph drawn in renderPage
+                break;
             case BlockKind::Table:
                 for (auto& r : b.rows) {
                     std::string t = r.k + (r.k.empty() ? "" : ": ") + r.v;
@@ -226,6 +232,24 @@ std::string formEncode(const std::vector<std::pair<std::string, std::string>>& f
     return o;
 }
 }  // namespace
+
+// form fields + the form's checkboxes, only if they are currently checked
+std::vector<std::pair<std::string, std::string>> Browser::withChecks(const lilka::Block& b) const {
+    return withChecksFields(b.formFields, b.checkIds);
+}
+
+std::vector<std::pair<std::string, std::string>> Browser::withChecksFields(
+        const std::vector<std::pair<std::string, std::string>>& base,
+        const std::vector<size_t>& ids) const {
+    std::vector<std::pair<std::string, std::string>> f = base;
+    for (size_t id : ids) {
+        if (id < page_.blocks.size() && page_.blocks[id].checked) {
+            const auto& cb = page_.blocks[id];
+            f.emplace_back(cb.name, cb.value);
+        }
+    }
+    return f;
+}
 
 void Browser::navigate(const std::string& urlIn) {
     std::string url = urlIn;
@@ -567,7 +591,8 @@ void Browser::activate(int lineIdx) {
                 net::Url u;
                 if (net::parseUrl(currentUrl_, u)) target = net::resolve(u, target);
             }
-            if (b.formMethod == "POST") submitPost(target, b.formFields, b.name, b.text);
+            auto fields = withChecks(b);
+            if (b.formMethod == "POST") submitPost(target, fields, b.name, b.text);
             else navigate(target);
         }
     } else if (b.kind == BlockKind::Input) {
@@ -575,6 +600,7 @@ void Browser::activate(int lineIdx) {
         inputFormAction_ = b.formAction;
         inputFormMethod_ = b.formMethod;
         inputFormFields_ = b.formFields;
+        inputCheckIds_ = b.checkIds;
         kb_.reset();
         inputFrom_ = PAGE;
         mode_ = INPUTMODE;
@@ -637,6 +663,9 @@ bool Browser::loop() {
                         activate(lineCursor_);
                     } else if (blk.kind == BlockKind::Input) {
                         activate(lineCursor_);
+                    } else if (blk.kind == BlockKind::Checkbox) {
+                        blk.checked = !blk.checked;
+                        dirty_ = true;
                     } else if (blk.kind == BlockKind::Select && !blk.options.empty()) {
                         blk.selected = (blk.selected + 1) % blk.options.size();
                         buildLines();
@@ -756,7 +785,7 @@ bool Browser::loop() {
                         if (net::parseUrl(currentUrl_, u)) action = net::resolve(u, action);
                     }
                     if (inputFormMethod_ == "POST") {
-                        submitPost(action, inputFormFields_, inputPurpose_, v);
+                        submitPost(action, withChecksFields(inputFormFields_, inputCheckIds_), inputPurpose_, v);
                     } else {
                         std::string sep = action.find('?') == std::string::npos ? "?" : "&";
                         navigate(action + sep + urlenc(inputPurpose_) + "=" + urlenc(v));
@@ -848,7 +877,7 @@ void Browser::renderPage() {
             auto k = page_.blocks[l.block].kind;
             if (k == BlockKind::Link) c = C_LINK;
             if (k == BlockKind::Heading) c = 0xFFE0;
-            if (k == BlockKind::Input || k == BlockKind::Select) c = 0xF800;
+            if (k == BlockKind::Input || k == BlockKind::Select || k == BlockKind::Checkbox) c = 0xF800;
             if (k == BlockKind::Text && page_.blocks[l.block].bold) c = 0xFFFF;
         }
         if (i == sel_) {
@@ -857,7 +886,33 @@ void Browser::renderPage() {
         }
         std::string t = l.text;
         if (l.pseudo) c = C_DIM;
-        if (l.field) {
+        bool isCheck = l.block >= 0 && l.block < (int)page_.blocks.size() &&
+                       page_.blocks[l.block].kind == BlockKind::Checkbox;
+        if (isCheck) {
+            // checkbox glyph + label
+            int16_t bx = (i == sel_) ? 8 : 4;
+            int16_t by = y + (lh - 12) / 2;
+            gfx_->fillRect(bx, by, 12, 12, 0x0000);
+            gfx_->drawRect(bx, by, 12, 12, 0xC63F);
+            if (page_.blocks[l.block].checked) {
+                gfx_->drawLine(bx + 2, by + 6, bx + 5, by + 10, 0xFFFF);
+                gfx_->drawLine(bx + 5, by + 10, bx + 10, by + 2, 0xFFFF);
+            }
+            font::text(gfx_, bx + 18, y, font::fit(t.c_str(), gfx_->width() - bx - 22, scale), c, scale);
+        } else if (l.btn) {
+            // button: filled box, centered label, beveled bottom edge
+            int16_t x0 = (i == sel_) ? 8 : 4;
+            int16_t x1 = gfx_->width() - 4;
+            int16_t bh = (lh > 18) ? lh - 2 : 16;
+            int16_t by = y + (lh - bh) / 2;
+            gfx_->fillRect(x0, by, x1 - x0, bh, 0x2458);
+            gfx_->fillRect(x0, by + bh - 2, x1 - x0, 2, 0x1224);  // bottom bevel
+            gfx_->drawRect(x0, by, x1 - x0, bh, C_ACCENT);
+            int16_t tw = font::width(t.c_str(), scale);
+            int16_t tx = x0 + std::max<int16_t>(2, ((x1 - x0) - tw) / 2);
+            font::text(gfx_, tx, by + (bh - 13 * scale) / 2 + (scale > 1 ? 2 : 0),
+                       font::fit(t.c_str(), (int16_t)(x1 - x0 - 6), scale), 0xFFFF, scale);
+        } else if (l.field) {
             // input field: rectangle outline with the caption inside
             int16_t x0 = (i == sel_) ? 8 : 4;
             int16_t x1 = gfx_->width() - 4;

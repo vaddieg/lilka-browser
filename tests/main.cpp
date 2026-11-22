@@ -134,6 +134,38 @@ void test_inputs_forms() {
     CHECK(pg2.blocks[0].href == "/consent");
 }
 
+void test_checkboxes() {
+    Page pg = parse("<form action=\"/consent\">"
+                    "<input type=\"checkbox\" name=\"consent\" value=\"yes\">"
+                    "<input type=\"checkbox\" name=\"stats\" checked>"
+                    "<input type=\"submit\" value=\"Save\"></form>");
+    CHECK(countKind(pg, BlockKind::Checkbox) == 2);
+    const auto& c0 = pg.blocks[0];
+    CHECK(c0.name == "consent" && c0.value == "yes" && !c0.checked);
+    const auto& c1 = pg.blocks[1];
+    CHECK(c1.name == "stats" && c1.value == "on" && c1.checked);
+    // the submit button knows about both checkboxes (for submission)
+    const auto& b = pg.blocks[2];
+    CHECK(b.kind == BlockKind::Button);
+    CHECK(b.checkIds.size() == 2);
+    CHECK(b.checkIds[0] == 0 && b.checkIds[1] == 1);
+
+    // a later form resets the checkbox association
+    Page pg2 = parse("<form><input type=\"checkbox\" name=\"a\"></form>"
+                     "<form action=\"/x\"><input type=\"submit\" value=\"Go\"></form>");
+    CHECK(pg2.blocks[1].kind == BlockKind::Button);
+    CHECK(pg2.blocks[1].checkIds.empty());
+
+    // <label for> becomes the caption (label after the input)
+    Page pg3 = parse("<form><input type=\"checkbox\" id=\"keep\" name=\"k\">"
+                     "<label for=\"keep\">Keep me logged in</label></form>");
+    CHECK(pg3.blocks[0].kind == BlockKind::Checkbox);
+    CHECK(pg3.blocks[0].text == "Keep me logged in");
+    // aria-label also works
+    Page pg4 = parse("<input type=\"checkbox\" aria-label=\"Agree to terms\">");
+    CHECK(pg4.blocks[0].text == "Agree to terms");
+}
+
 void test_tables() {
     Page pg = parse("<table>"
                     "<tr><th>Key</th><th>Value</th></tr>"
@@ -279,6 +311,7 @@ int main(int argc, char** argv) {
     test_entities();
     test_cyrillic();
     test_inputs_forms();
+    test_checkboxes();
     test_tables();
     test_select();
     test_lists();

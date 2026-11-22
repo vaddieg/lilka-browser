@@ -260,6 +260,12 @@ void Parser::openCtx(const Ctx& c) {
 void Parser::closeCtx() {
     if (ctx_.kind == Ctx::None) return;
     std::string t = trimCollapse(ctx_.text);
+    if (ctx_.kind == Ctx::Label) {
+        // remember the label for its control (matched by id in finish())
+        if (!ctx_.name.empty() && !t.empty()) labelFor_[ctx_.name] = t;
+        ctx_ = Ctx{}; ctx_.kind = Ctx::None;
+        return;
+    }
     if (ctx_.kind == Ctx::Select) {
         if (!ctx_.options.empty())
             t = ctx_.options[ctx_.selected < ctx_.options.size() ? ctx_.selected : 0];
@@ -429,6 +435,13 @@ void Parser::feed(const char* data, size_t len) {
                     openCtx(cx);
                     continue;
                 }
+                if (name == "label") {
+                    Ctx cx;
+                    cx.kind = Ctx::Label;
+                    cx.name = unescapeAttr(attrValue(body, "for"));  // for= -> control id
+                    openCtx(cx);
+                    continue;
+                }
                 if (name == "input") {
                     std::string type = attrValue(body, "type");
                     for (auto& ch : type) ch = (char)tolower((unsigned char)ch);
@@ -452,7 +465,31 @@ void Parser::feed(const char* data, size_t len) {
                         blk.formAction = formAction_;
                         blk.formMethod = formMethod_;
                         blk.formFields = formHidden_;
+                        blk.checkIds = formChecks_;
                         if (page_.blocks.size() < kMaxBlocks) page_.blocks.push_back(std::move(blk));
+                        continue;
+                    }
+                    if (type == "checkbox" || type == "radio") {
+                        flushText();
+                        Block blk;
+                        blk.kind = BlockKind::Checkbox;
+                        blk.name = attrValue(body, "name");
+                        blk.value = attrValue(body, "value");
+                        if (blk.value.empty()) blk.value = "on";
+                        blk.text = blk.name.empty() ? "(checkbox)" : blk.name;
+                        blk.id = attrValue(body, "id");
+                        // accessible name wins over the field name
+                        std::string lab = attrValue(body, "aria-label");
+                        if (lab.empty()) lab = attrValue(body, "title");
+                        if (!lab.empty()) blk.text = lab;
+                        // present as bare "checked" or checked="..."
+                        blk.checked = (attrValue(body, "checked").size() > 0) ||
+                                     (body.find(" checked") != std::string::npos);
+                        if (page_.blocks.size() < kMaxBlocks) {
+                            size_t idx = page_.blocks.size();
+                            page_.blocks.push_back(std::move(blk));
+                            formChecks_.push_back(idx);
+                        }
                         continue;
                     }
                     flushText();
@@ -464,6 +501,7 @@ void Parser::feed(const char* data, size_t len) {
                     blk.formAction = formAction_;
                     blk.formMethod = formMethod_;
                     blk.formFields = formHidden_;
+                    blk.checkIds = formChecks_;
                     if (page_.blocks.size() < kMaxBlocks) page_.blocks.push_back(std::move(blk));
                     continue;
                 }
@@ -546,13 +584,13 @@ void Parser::feed(const char* data, size_t len) {
                 }
                 continue;
             }
-            if (name == "a" || name == "button" || name == "li" ||
+            if (name == "a" || name == "button" || name == "li" || name == "label" ||
                 (name.size() == 2 && name[0] == 'h' && name[1] >= '1' && name[1] <= '6')) {
                 closeCtx();
                 continue;
             }
             if (name == "title") { inTitle_ = false; titleDone_ = true; continue; }
-            if (name == "form") { formAction_ = ""; formMethod_ = "GET"; formHidden_.clear(); continue; }
+            if (name == "form") { formAction_ = ""; formMethod_ = "GET"; formHidden_.clear(); formChecks_.clear(); continue; }
             if (name == "b" || name == "strong") { bold_ = false; continue; }
             if (name == "i" || name == "em") { italic_ = false; continue; }
             if (name == "p" || name == "div" || name == "section" || name == "article" ||
@@ -588,6 +626,13 @@ void Parser::finish() {
     if (inTable_) emitTable();
     if (ctx_.kind != Ctx::None) closeCtx();
     flushText();
+    // resolve <label for=id> -> checkbox captions (labels often come
+    // after the input, so this can't be done inline)
+    for (auto& b : page_.blocks) {
+        if (b.kind != BlockKind::Checkbox || b.id.empty()) continue;
+        auto it = labelFor_.find(b.id);
+        if (it != labelFor_.end() && !it->second.empty()) b.text = it->second;
+    }
 }
 
 }  // namespace html

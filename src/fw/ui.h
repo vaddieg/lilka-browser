@@ -15,6 +15,7 @@ struct Line {
     std::string text;
     bool pseudo = false; // ellipsis / table / select line
     bool field = false;  // input field: draw rectangle outline around caption
+    bool btn = false;    // button: draw button box
 };
 
 class Browser {
@@ -54,6 +55,7 @@ private:
     std::string inputFormAction_;
     std::string inputFormMethod_;
     std::vector<std::pair<std::string, std::string>> inputFormFields_;
+    std::vector<size_t> inputCheckIds_;  // checkbox blocks in the input's form
 
     // settings
     int fontScale_ = 1;         // 1 = 13px, 2 = 20px, 3 = 40px
@@ -66,6 +68,10 @@ private:
     bool clickable(int lineIdx) const;
     void buildLines();
     void navigate(const std::string& url);
+    std::vector<std::pair<std::string, std::string>> withChecks(const lilka::Block& b) const;
+    std::vector<std::pair<std::string, std::string>> withChecksFields(
+            const std::vector<std::pair<std::string, std::string>>& base,
+            const std::vector<size_t>& ids) const;
     void submitPost(const std::string& url, const std::vector<std::pair<std::string, std::string>>& fields,
                     const std::string& extraName, const std::string& extraValue);
     void finishLoad(const std::string& url, std::string html, const std::string& finalUrl);

@@ -20,8 +20,8 @@ public:
     const Page& page() const { return page_; }
 
 private:
-    struct Ctx {           // open element state (a/button/h*/li/select)
-        enum { None, Link, Button, Heading, ListItem, Select } kind;
+    struct Ctx {           // open element state (a/button/h*/li/select/label)
+        enum { None, Link, Button, Heading, ListItem, Select, Label } kind;
         std::string href;
         std::string formMethod;
         std::vector<std::pair<std::string, std::string>> formFields;
@@ -54,6 +54,8 @@ private:
     std::string formAction_;
     std::string formMethod_ = "GET";
     std::vector<std::pair<std::string, std::string>> formHidden_;  // <input type=hidden> inside current form
+    std::vector<size_t> formChecks_;  // block indexes of checkboxes in current form
+    std::map<std::string, std::string> labelFor_;  // <label for=id> -> text
     // table state
     bool inTable_ = false;
     std::vector<std::vector<std::string>> tableRows_;
