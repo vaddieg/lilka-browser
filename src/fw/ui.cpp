@@ -1456,8 +1456,9 @@ bool Browser::isFileUrl(const std::string& url) {
     if (dot == std::string::npos || dot == name.size() - 1) return false;
     std::string ext = name.substr(dot + 1);
     for (auto& c : ext) c = (char)tolower((unsigned char)c);
+    // txt / md are NOT here on purpose: text files open inline as plain text
     static const char* kExt[] = {
-        "zip", "tar", "gz", "tgz", "7z", "rar", "bz2", "xz", "pdf", "txt", "md",
+        "zip", "tar", "gz", "tgz", "7z", "rar", "bz2", "xz", "pdf",
         "csv", "json", "xml", "bin", "hex", "elf", "uf2", "mp3", "wav", "ogg",
         "png", "jpg", "jpeg", "gif", "webp", "svg", "ttf", "otf", "woff", "woff2",
         "exe", "dmg", "apk", "deb", "rpm", "iso", "webm", "mp4",
@@ -1486,7 +1487,7 @@ void Browser::downloadFile(const std::string& urlIn) {
     else if (WiFi.status() != WL_CONNECTED && !net::connect(ssid, pass, 20000)) err = "wifi connect failed";
     else {
         net::Client c;
-        if (c.get(url, data, finalUrl, err, 60000)) {
+        if (c.get(url, data, finalUrl, err, 180000)) {   // 3 min for large files
             std::string ct = net::lastContentType();
             for (auto& ch : ct) ch = (char)tolower((unsigned char)ch);
             // text responses (e.g. .txt/.json served as text/*) are fine to keep as-is
