@@ -1481,7 +1481,7 @@ void Browser::downloadFile(const std::string& urlIn) {
     gfx_->flush();
 
     std::string err, data, finalUrl;
-    bool ok = false;
+    bool got = false;
     std::string ssid, pass;
     if (!net::wifiCreds(ssid, pass)) err = "no wifi creds (set up in Keira)";
     else if (WiFi.status() != WL_CONNECTED && !net::connect(ssid, pass, 20000)) err = "wifi connect failed";
@@ -1490,13 +1490,20 @@ void Browser::downloadFile(const std::string& urlIn) {
         if (c.get(url, data, finalUrl, err, 180000)) {   // 3 min for large files
             std::string ct = net::lastContentType();
             for (auto& ch : ct) ch = (char)tolower((unsigned char)ch);
-            // text responses (e.g. .txt/.json served as text/*) are fine to keep as-is
             Serial.printf("[dl] got %u bytes ct=%s\n", (unsigned)data.size(), ct.c_str());
-            ok = true;
+            // A .bin URL can still serve HTML (e.g. a GitHub /blob/ page). If the
+            // server actually sent text, it's a page — render it, don't save the
+            // HTML as a binary file.
+            if (ct.empty() || ct.rfind("text/", 0) == 0) {
+                Serial.printf("[dl] response is text (%s) -> render as page\n", ct.c_str());
+                finishLoad(url, std::move(data), finalUrl);
+                return;
+            }
+            got = true;
         }
     }
 
-    if (!ok) {
+    if (!got) {
         errText_ = err.empty() ? std::string("download failed") : err;
         mode_ = ERROR;
         dirty_ = true;
