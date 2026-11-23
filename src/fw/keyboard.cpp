@@ -180,7 +180,7 @@ void Keyboard::draw(Arduino_GFX* gfx, const std::string& title) const {
             if (!k) continue;
             int16_t px = x * bw, py = top + y * bh;
             bool sel = (x == cx && y == cy);
-            if (sel) gfx->fillRect(px, py, bw, bh, 0x7E6E);  // orange-red-ish
+            if (sel) gfx->fillRect(px, py, bw, bh, 0x07FF);  // cyan accent (matches the top bar)
             const char* cap = nullptr;
             char tmp[4] = {0};
             if (k == K_L0) cap = "ab";
@@ -202,7 +202,7 @@ void Keyboard::draw(Arduino_GFX* gfx, const std::string& title) const {
                 int16_t w = font::width(cap, ks);
                 if (w > bw - 2) continue;
                 int16_t capH = 20;
-                font::text(gfx, px + (bw - w) / 2, py + (bh - capH) / 2, cap, 0xFFFF, ks);
+                font::text(gfx, px + (bw - w) / 2, py + (bh - capH) / 2, cap, sel ? 0x0000 : 0xFFFF, ks);
             }
         }
     }

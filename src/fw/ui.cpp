@@ -22,8 +22,8 @@ constexpr int kFooterH = 14;
 // The panel has rounded corners, so keep the top/bottom bars off the extreme
 // left/right edges (inset from both sides).
 constexpr int kBarInset = 25;
-const uint16_t C_ACCENT = 0x7BEF;    // clean cyan (R15 G47 B47) — was a greenish-teal
-const uint16_t C_LINK = 0x7CFF;      // cyan-ish for links
+const uint16_t C_ACCENT = 0x07FF;    // cyan (R0 G31 B31) — same convention as lilka-boombox
+const uint16_t C_LINK = 0x07FF;      // cyan for links
 const uint16_t C_DIM = 0x841C;
 
 // Top bar background: full width (looks better edge-to-edge; the panel's rounded
@@ -1392,18 +1392,15 @@ void Browser::renderPage() {
     }
     topBar(gfx_, C_ACCENT);
     {
-        int reserve = prog.empty() ? 0 : (int)font::width(prog.c_str(), 1) + 16;  // chip + gap
+        int reserve = prog.empty() ? 0 : (int)font::width(prog.c_str(), 1) + 10;  // counter + gap
         int w = gfx_->width() - 2 * kBarInset - reserve;
         if (w < 20) w = 20;
         font::text(gfx_, kBarInset, 3, font::fit(h.c_str(), w, 1), 0x0000, 1);
     }
     if (!prog.empty()) {
-        // A light chip behind solid-black text so it reads as a clear badge on the
-        // cyan bar (plain 13px tinted text washed out / was "barely visible").
+        // Solid black on the bright cyan bar (boombox C_SEL/C_SEL_TEXT convention).
         int tw = font::width(prog.c_str(), 1);
-        int x = gfx_->width() - tw - kBarInset;
-        gfx_->fillRect(x - 4, 2, tw + 8, kHeaderH - 4, 0xFFFF);
-        font::text(gfx_, x, 3, prog.c_str(), 0x0000, 1);
+        font::text(gfx_, gfx_->width() - tw - kBarInset, 3, prog.c_str(), 0x0000, 1);
     }
 
     int y = kHeaderH + 4;
