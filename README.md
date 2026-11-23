@@ -87,5 +87,11 @@ make loop
     so image loading never stays dead. The worker brings Wi-Fi up itself (it runs off
     the UI flow), since a cold-boot first netconn call from a background task otherwise
     hits an uninitialized lwIP core mutex.
+- **Won't load: Cloudflare bot-detection sites.** Sites fronted by Cloudflare with
+  aggressive bot management (e.g. `docs.lilka.dev` / ReadTheDocs) return **403** to the
+  ESP32's mbedTLS client. Cloudflare fingerprints the TLS ClientHello (JA3) and blocks
+  non-browser stacks *before* HTTP, so a browser User-Agent still gets 403 (verified).
+  This is a hard limitation of the ESP32 TLS stack, not a bug — the error screen now
+  explains it. (Most other sites, including www.cloudflare.com, work fine.)
 - UA: see `docs/UA-RESEARCH.md`; ideas for later: `docs/IDEAS.md`;
   serial debug commands: `docs/DEBUG-CLI.md`.

@@ -1594,8 +1594,17 @@ void Browser::renderError() {
     gfx_->fillScreen(0x0000);
     topBar(gfx_, 0x7B00);
     headerTitle(gfx_, "Error", 0xFFFF);
+    // The bare "http NNN" is cryptic; add a short, actionable note for the
+    // common "the server refused us" statuses.
+    std::string shown = errText_;
+    if (shown.rfind("http 403", 0) == 0)
+        shown += "\n\nThe site refused this client. Cloudflare's bot-detection fingerprints the ESP32's TLS stack and blocks it — it loads in a normal browser, not here (not a fixable bug).";
+    else if (shown.rfind("http 429", 0) == 0)
+        shown += "\n\nThe site is rate-limiting you. Wait a bit, then retry.";
+    else if (shown.rfind("http 503", 0) == 0)
+        shown += "\n\nThe site is temporarily unavailable.";
     std::vector<std::string> ws;
-    wrapWords(errText_, gfx_->width() - 12, ws);
+    wrapWords(shown, gfx_->width() - 12, ws);
     int y = kHeaderH + 10;
     for (auto& w : ws) {
         font::text(gfx_, 8, y, font::fit(w.c_str(), gfx_->width() - 12, 1), 0xFFFF, 1);
