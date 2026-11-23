@@ -1316,8 +1316,9 @@ bool Browser::loop() {
     if (act) dirty_ = true;
 
     // Live refresh: when a background image lands (done-count changes) while we
-    // are viewing the page, repaint so the placeholder turns into the image.
-    if (mode_ == PAGE && !pageImages_.empty()) {
+    // are viewing the page, repaint so the placeholder turns into the image and
+    // the top-bar "(done/total)" counter advances.
+    if (mode_ == PAGE && img::total() > 0) {
         int d = img::done();
         if (d != lastImgStatus_) { lastImgStatus_ = d; dirty_ = true; }
     }
@@ -1378,11 +1379,29 @@ void Browser::renderPopup(const std::string& title, const std::vector<std::strin
 
 void Browser::renderPage() {
     gfx_->fillScreen(0x0000);
-    // header: short url
+    // header: short url + image-download progress on the right, e.g. "(3/8)"
     std::string h = currentUrl_.empty() ? "Lilka Browser" : currentUrl_;
     if (h.rfind("https://", 0) == 0) h = h.substr(8);
+    std::string prog;
+    {
+        int it = img::total();
+        if (it > 0) {
+            char b[16]; snprintf(b, sizeof b, "%d/%d", img::done(), it);
+            prog = std::string("(") + b + ")";
+        }
+    }
     topBar(gfx_, C_ACCENT);
-    headerTitle(gfx_, h.c_str(), 0x0000);
+    {
+        int reserve = prog.empty() ? 0 : (int)font::width(prog.c_str(), 1) + 8;
+        int w = gfx_->width() - 2 * kBarInset - reserve;
+        if (w < 20) w = 20;
+        font::text(gfx_, kBarInset, 3, font::fit(h.c_str(), w, 1), 0x0000, 1);
+    }
+    if (!prog.empty()) {
+        int tw = font::width(prog.c_str(), 1);
+        uint16_t pc = (img::done() < img::total()) ? 0x0000 : 0x364A;  // black while active, dark-green when done
+        font::text(gfx_, gfx_->width() - tw - kBarInset, 3, prog.c_str(), pc, 1);
+    }
 
     int y = kHeaderH + 4;
     int vis = 0;
