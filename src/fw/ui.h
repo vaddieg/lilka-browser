@@ -115,6 +115,11 @@ private:
     std::string busyStage_;
     std::string busyUrl_;
     uint32_t busyT0_ = 0;
+    // Download-progress awareness so the busy screen can show a download bar
+    // instead of the generic "Loading..." HTML screen.
+    bool busyDownload_ = false;
+    long busyBytes_ = 0;
+    long busyTotal_ = -1;
 };
 
 }  // namespace ui

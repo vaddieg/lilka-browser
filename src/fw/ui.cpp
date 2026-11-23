@@ -375,6 +375,7 @@ void Browser::navigate(const std::string& urlIn, bool fromRedirect) {
     std::string lang = store::get("lang", "uk");
     net::setAcceptLanguage(lang == "uk" ? "uk,ru;q=0.8" : lang == "ru" ? "ru,en;q=0.8" : "en");
     busyStage_ = "start";
+    busyDownload_ = false;
     busyUrl_ = url;
     busyT0_ = millis();
     mode_ = BUSY;
@@ -1352,6 +1353,43 @@ void Browser::renderLinkList() {
 
 void Browser::renderBusy() {
     gfx_->fillScreen(0x0000);
+    if (busyDownload_) {
+        // ---- Download screen: progress bar + received bytes ----
+        font::text(gfx_, 10, 44, "Downloading...", 0xFFFF, 2);
+        // filename (last path segment) if we can pull one out of the URL
+        std::string url = busyUrl_;
+        size_t q = url.find_first_of("?#");
+        if (q != std::string::npos) url = url.substr(0, q);
+        size_t slash = url.find_last_of('/');
+        std::string fname = (slash == std::string::npos) ? url : url.substr(slash + 1);
+        if (fname.empty() || fname.find('.') == std::string::npos) fname += ".bin";
+        font::text(gfx_, 10, 76, font::fit(fname.c_str(), gfx_->width() - 20, 1), 0xFFFF, 1);
+
+        int bx = 10, by = 104, bw = gfx_->width() - 20, bh = 14;
+        gfx_->drawRect(bx, by, bw, bh, C_DIM);
+        int fillw = 0;
+        if (busyTotal_ > 0 && busyBytes_ > 0) {
+            fillw = (int)((long)bw * busyBytes_ / busyTotal_);
+            if (fillw > bw) fillw = bw;
+        }
+        if (fillw > 0) gfx_->fillRect(bx + 1, by + 1, fillw - 2 > 0 ? fillw - 2 : 1, bh - 2, C_ACCENT);
+
+        char s[40];
+        if (busyTotal_ > 0) snprintf(s, sizeof s, "%lu.%luKB / %luKB",
+                          (unsigned long)(busyBytes_ / 1024), (unsigned long)((busyBytes_ / 100) % 10),
+                          (unsigned long)(busyTotal_ / 1024));
+        else snprintf(s, sizeof s, "%lu.%luKB received",
+                          (unsigned long)(busyBytes_ / 1024), (unsigned long)((busyBytes_ / 100) % 10));
+        font::text(gfx_, 10, by + 20, s, 0xFFFF, 1);
+        if (busyT0_) {
+            char t[16];
+            snprintf(t, sizeof t, "%lus", (unsigned long)((millis() - busyT0_) / 1000));
+            font::text(gfx_, 10, by + 38, t, C_DIM, 1);
+        }
+        font::text(gfx_, 4, gfx_->height() - kFooterH + 1, "B=cancel", C_DIM, 1);
+        return;
+    }
+
     font::text(gfx_, 10, 60, "Loading...", 0xFFFF, 2);
     // target address (wrapped, max 4 lines)
     std::vector<std::string> ws;
@@ -1371,6 +1409,17 @@ void Browser::renderBusy() {
 
 void Browser::onStage(const char* s) {
     busyStage_ = s ? s : "";
+    // Track download progress from "dl 123KB" / "dl 123KB/4041KB" stage strings.
+    if (busyDownload_ && busyStage_.rfind("dl ", 0) == 0) {
+        const char* p = busyStage_.c_str() + 3;
+        long done = atol(p);
+        busyBytes_ = done * 1024;
+        size_t slash = busyStage_.find('/', 3);
+        if (slash != std::string::npos) {
+            long tot = atol(busyStage_.c_str() + slash + 1);
+            busyTotal_ = tot * 1024;
+        }
+    }
     if (mode_ == BUSY) {
         renderBusy();
         gfx_->flush();  // fetch blocks the main loop — flush inline
@@ -1473,6 +1522,9 @@ void Browser::downloadFile(const std::string& urlIn) {
 
     net::setStageFn([](const char* s) { g_browser.onStage(s); });
     busyStage_ = "start";
+    busyDownload_ = true;
+    busyBytes_ = 0;
+    busyTotal_ = -1;
     busyUrl_ = url;
     busyT0_ = millis();
     mode_ = BUSY;

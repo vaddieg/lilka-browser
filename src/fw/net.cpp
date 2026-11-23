@@ -784,7 +784,9 @@ long Client::download(const std::string& url, const std::string& sdPath,
             lastData = millis();
             if (total - lastReported >= 16384) {
                 lastReported = total;
-                stage(("dl " + std::to_string(total / 1024) + "KB").c_str());
+                std::string st = "dl " + std::to_string(total / 1024) + "KB";
+                if (h.contentLength > 0) st += "/" + std::to_string(h.contentLength / 1024) + "KB";
+                stage(st.c_str());
             }
             return true;
         };
