@@ -4,6 +4,10 @@
 
 namespace kb {
 
+// Horizontal padding for the top title/value text so it clears the panel's
+// rounded corners (the key grid itself runs edge-to-edge).
+constexpr int kPad = 25;
+
 // [lang][layer][ROWS*COLS]
 static const int16_t keys[3][3][ROWS * COLS] = {
     // ---------------- English ----------------
@@ -143,13 +147,13 @@ void Keyboard::draw(Arduino_GFX* gfx, const std::string& title) const {
     int16_t W = gfx->width(), H = gfx->height();
     gfx->fillScreen(0x0000);
 
-    // header
-    font::text(gfx, 8, 4, title.c_str(), 0xFFFF, 1);
+    // header (padded to clear the rounded corners)
+    font::text(gfx, kPad, 4, title.c_str(), 0xFFFF, 1);
 
     // value line (last chars that fit)
     std::string v = value_;
     const char* show = v.c_str();
-    int16_t maxW = W - 16;
+    int16_t maxW = W - kPad - 8;
     // shrink from the front until it fits
     while (*show && font::width(show, 1) > maxW) {
         size_t n = font::charLen((const unsigned char*)show);
@@ -160,10 +164,10 @@ void Keyboard::draw(Arduino_GFX* gfx, const std::string& title) const {
         snprintf(buf, sizeof(buf), "%s%s", "\xE2\x80\xA6", show);
         show = buf;
     }
-    font::text(gfx, 8, 22, show, 0xFFFF, 1);
+    font::text(gfx, kPad, 22, show, 0xFFFF, 1);
     if (blink) {
         int16_t w = font::width(show, 1);
-        gfx->fillRect(8 + w + 2, 22, 2, 13, 0xFFFF);
+        gfx->fillRect(kPad + w + 2, 22, 2, 13, 0xFFFF);
     }
 
     // key grid

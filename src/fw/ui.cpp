@@ -26,10 +26,11 @@ const uint16_t C_ACCENT = 0x7E6E;
 const uint16_t C_LINK = 0x7CFF;      // cyan-ish for links
 const uint16_t C_DIM = 0x841C;
 
-// Inset top bar (filled), its title text, and the footer hint text — all kept
-// clear of the rounded corners by kBarInset on each side.
+// Top bar background: full width (looks better edge-to-edge; the panel's rounded
+// corners clip it naturally). The title text and footer hint are still inset by
+// kBarInset so they stay out of the rounded corners.
 void topBar(Arduino_GFX* g, uint16_t color) {
-    g->fillRect(kBarInset, 0, g->width() - 2 * kBarInset, kHeaderH, color);
+    g->fillRect(0, 0, g->width(), kHeaderH, color);
 }
 void headerTitle(Arduino_GFX* g, const char* text, uint16_t color) {
     int w = g->width() - 2 * kBarInset;
