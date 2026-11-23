@@ -81,7 +81,7 @@ public:
     bool get(const std::string& url, std::string& outBody, std::string& outFinalUrl,
              std::string& err, int timeoutMs = 15000, int maxRedirects = 5,
              const std::string& userAgent =
-                 "Lilka/1.0 (ESP32-S3; browser; +https://github.com/lilka-dev/lilka)");
+                 "Mozilla/5.0 (FreeRTOS; ESP32; Mobile) Mobile Safari/537.36");
 
     /// GET with conditional revalidation: sends If-None-Match / If-Modified-Since.
     /// On 304 the body is left empty and lastNotModified() is true.
@@ -89,7 +89,7 @@ public:
                  std::string& err, const std::string& ifNoneMatch, const std::string& ifModifiedSince,
                  int timeoutMs = 15000, int maxRedirects = 5,
                  const std::string& userAgent =
-                     "Lilka/1.0 (ESP32-S3; browser; +https://github.com/lilka-dev/lilka)");
+                     "Mozilla/5.0 (FreeRTOS; ESP32; Mobile) Mobile Safari/537.36");
 
     /// Fetch a binary (image) into `out` (PSRAM), streaming with a hard size cap.
     /// Only accepts image/jpeg / image/png; aborts (returns false) on other types,
@@ -105,7 +105,7 @@ public:
               std::string& outBody, std::string& outFinalUrl, std::string& err,
               int timeoutMs = 15000, int maxRedirects = 5,
               const std::string& userAgent =
-                  "Lilka/1.0 (ESP32-S3; browser; +https://github.com/lilka-dev/lilka)");
+                  "Mozilla/5.0 (FreeRTOS; ESP32; Mobile) Mobile Safari/537.36");
 
 private:
     bool open(const Url& u, int timeoutMs, WiFiClientSecure& client, std::string& err);
@@ -146,7 +146,7 @@ public:
                   std::string& err, std::string& finalUrl, std::string& outContentType,
                   int timeoutMs = 180000, int maxRedirects = 5,
                   const std::string& userAgent =
-                      "Lilka/1.0 (ESP32-S3; browser; +https://github.com/lilka-dev/lilka)");
+                      "Mozilla/5.0 (FreeRTOS; ESP32; Mobile) Mobile Safari/537.36");
 };
 
 /// Progress/stage reporting: called with "dns", "tcp", "tls", "send",

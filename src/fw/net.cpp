@@ -493,6 +493,7 @@ bool Client::sendRequest(const Url& u, WiFiClientSecure& client, Headers& h, std
                       "Accept: text/html,application/xhtml+xml;q=0.9,*/*;q=0.8\r\n"
                       "Accept-Encoding: gzip\r\n"
                       "Accept-Language: " + g_acceptLang + "\r\n" +
+                      "Sec-CH-UA-Mobile: ?1\r\n" +
                       (cookieHdr.empty() ? "" : ("Cookie: " + cookieHdr + "\r\n"));
     if (!ifNoneMatch.empty())     req += "If-None-Match: " + ifNoneMatch + "\r\n";
     if (!ifModifiedSince.empty()) req += "If-Modified-Since: " + ifModifiedSince + "\r\n";
@@ -909,7 +910,7 @@ bool Client::fetchBinary(const std::string& url, std::string& out, std::string& 
         std::string cookieHdr = getCookieHeader(u.host);
         std::string req = "GET " + u.path + " HTTP/1.1\r\n"
                           "Host: " + u.host + "\r\n"
-                          "User-Agent: Lilka/1.0 (ESP32-S3; browser)\r\n"
+                          "User-Agent: Mozilla/5.0 (FreeRTOS; ESP32; Mobile) Mobile Safari/537.36\r\n"
                           "Accept: image/jpeg,image/png,*/*;q=0.2\r\n"
                           "Accept-Encoding: identity\r\n" +
                           (cookieHdr.empty() ? "" : ("Cookie: " + cookieHdr + "\r\n")) +
