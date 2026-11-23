@@ -7,7 +7,11 @@
 #include <semphr.h>
 #include <atomic>
 #include <esp_heap_caps.h>
+#include <esp_jpeg_dec.h>   // esp_new_jpeg: decode JPEG directly to a target size (RGB565)
 #include <JPEGDEC.h>
+// NOTE: PNGdec's internal line buffer (ucPixels) is sized by PNG_MAX_BUFFERED_PIXELS,
+// which must be defined GLOBALLY (build_flags) so the library itself is compiled with
+// it — it needs to hold two lines (current + previous) for unfiltering. See decodePng().
 #include <PNGdec.h>
 #include <cstring>
 #include <cmath>
@@ -30,6 +34,16 @@ bool isJpeg(const std::string& d) { return d.size() >= 2 && (unsigned char)d[0] 
 bool isPng(const std::string& d)  {
     static const uint8_t sig[4] = {0x89, 0x50, 0x4E, 0x47};
     return d.size() >= 4 && std::memcmp(d.data(), sig, 4) == 0;
+}
+
+// Which download cap applies to a URL, by its path extension (.jpg/.jpeg vs .png).
+size_t urlMaxBytes(const std::string& url) {
+    std::string low; for (char ch : url) low += (char)tolower((unsigned char)ch);
+    size_t q = low.find_first_of("?#");
+    std::string p = (q == std::string::npos) ? low : low.substr(0, q);
+    bool jpeg = (p.size() > 4 && p.compare(p.size() - 4, 4, ".jpg") == 0)
+             || (p.size() > 5 && p.compare(p.size() - 5, 5, ".jpeg") == 0);
+    return jpeg ? kMaxJpegBytes : kMaxPngBytes;
 }
 
 // --- 16-bit BMP ---
@@ -111,37 +125,108 @@ static int pngDraw(PNGDRAW* d) {
     return 1;  // 1 = continue decoding (0 = quit early)
 }
 
-/// Decode JPEG/PNG (<= caps) into a PSRAM RGB565 buffer of w*h. nullptr on failure.
+// --- JPEG decode (esp_new_jpeg, direct to target size; JpegDEC as fallback) ---
+
+// Fallback: JpegDEC (handles progressive JPEG, which esp_new_jpeg does not).
+// Decodes full-res into a PSRAM buffer; caller downscales afterwards.
+static uint16_t* decodeJpegFallback(const std::string& data, int& w, int& h) {
+    JPEGDEC* j = new JPEGDEC();
+    if (j->openRAM((uint8_t*)data.data(), (int)data.size(), jpegDraw) == 0) { Serial.printf("[img] jpeg(openRAM) fail\n"); delete j; return nullptr; }
+    int sw = j->getWidth(), sh = j->getHeight();
+    if (sw <= 0 || sh <= 0 || (long)sw * sh > kMaxPixels || sw > kMaxDim || sh > kMaxDim) { Serial.printf("[img] jpeg too big %dx%d\n", sw, sh); j->close(); delete j; return nullptr; }
+    uint16_t* buf = (uint16_t*)heap_caps_malloc((size_t)sw * sh * 2, MALLOC_CAP_SPIRAM);
+    if (!buf) { j->close(); delete j; return nullptr; }
+    g_jpg.out = buf; g_jpg.w = sw; g_jpg.h = sh;
+    int rc = j->decode(0, 0, 0);
+    j->close(); delete j;
+    if (rc == 0) { Serial.printf("[img] jpeg decode fail\n"); heap_caps_free(buf); return nullptr; }
+    w = sw; h = sh;
+    return buf;
+}
+
+// esp_new_jpeg: decode a baseline JPEG directly to a target resolution (<= kOutW x kOutH
+// where possible) as RGB565, so the PSRAM buffer is only the target size. Falls back to
+// JpegDEC if esp_new_jpeg can't handle the file (e.g. progressive JPEG).
+static uint16_t* decodeJpeg(const std::string& data, int& w, int& h) {
+    // 1) probe the source dimensions
+    jpeg_dec_config_t probe = DEFAULT_JPEG_DEC_CONFIG();
+    probe.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
+    jpeg_dec_handle_t dec = nullptr;
+    if (jpeg_dec_open(&probe, &dec) != JPEG_ERR_OK) return decodeJpegFallback(data, w, h);
+    jpeg_dec_io_t io = { (uint8_t*)data.data(), (int)data.size(), (int)data.size(), nullptr, 0 };
+    jpeg_dec_header_info_t info = {};
+    bool ok = (jpeg_dec_parse_header(dec, &io, &info) == JPEG_ERR_OK && info.width > 0 && info.height > 0);
+    jpeg_dec_close(dec);
+    if (!ok) { Serial.printf("[img] esp jpeg: header fail\n"); return decodeJpegFallback(data, w, h); }
+    int sw = info.width, sh = info.height;
+    if (sw > kMaxDim || sh > kMaxDim || (long)sw * sh > 4 * 1000 * 1000) { Serial.printf("[img] esp jpeg: too big %dx%d\n", sw, sh); return decodeJpegFallback(data, w, h); }
+
+    // 2) pick the scale. esp_new_jpeg can shrink by at most 1/8 and requires the
+    //    output dims to be multiples of 8. If the source is already small, skip scale.
+    uint16_t scW = 0, scH = 0;
+    int outW = sw, outH = sh;
+    if (sw > kOutW || sh > kOutH) {
+        double ratio = std::min((double)kOutW / sw, (double)kOutH / sh);
+        if (ratio < 1.0 / 8.0) ratio = 1.0 / 8.0;
+        int tw = (int)(sw * ratio) / 8 * 8; if (tw < 8) tw = 8; if (tw > sw) tw = sw;
+        int th = (int)(sh * ratio) / 8 * 8; if (th < 8) th = 8; if (th > sh) th = sh;
+        scW = (uint16_t)tw; scH = (uint16_t)th; outW = tw; outH = th;
+    }
+
+    // 3) open with the target scale and decode into a PSRAM, 16-byte-aligned buffer
+    jpeg_dec_config_t cfg = DEFAULT_JPEG_DEC_CONFIG();
+    cfg.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
+    cfg.scale.width = scW; cfg.scale.height = scH;
+    jpeg_dec_handle_t dec2 = nullptr;
+    if (jpeg_dec_open(&cfg, &dec2) != JPEG_ERR_OK) return decodeJpegFallback(data, w, h);
+    // parse_header is required before process; do it on the scaled handle too.
+    jpeg_dec_io_t io2 = { (uint8_t*)data.data(), (int)data.size(), (int)data.size(), nullptr, 0 };
+    if (jpeg_dec_parse_header(dec2, &io2, &info) != JPEG_ERR_OK) { jpeg_dec_close(dec2); return decodeJpegFallback(data, w, h); }
+    int outLen = 0;
+    if (jpeg_dec_get_outbuf_len(dec2, &outLen) != JPEG_ERR_OK || outLen <= 0) { jpeg_dec_close(dec2); return decodeJpegFallback(data, w, h); }
+    uint8_t* buf = (uint8_t*)heap_caps_aligned_alloc(16, (size_t)outLen, MALLOC_CAP_SPIRAM);
+    if (!buf) { Serial.printf("[img] esp jpeg: alloc %d\n", outLen); jpeg_dec_close(dec2); return decodeJpegFallback(data, w, h); }
+    io2.outbuf = buf; io2.out_size = outLen;
+    jpeg_error_t rc = jpeg_dec_process(dec2, &io2);
+    jpeg_dec_close(dec2);
+    if (rc != JPEG_ERR_OK) {
+        Serial.printf("[img] esp jpeg: process rc=%d -> fallback\n", (int)rc);
+        heap_caps_free(buf);
+        return decodeJpegFallback(data, w, h);
+    }
+    Serial.printf("[img] esp jpeg %dx%d -> %dx%d\n", sw, sh, outW, outH);
+    w = outW; h = outH;
+    return (uint16_t*)buf;
+}
+
+// --- PNG decode (PNGdec, full-res into PSRAM) ---
+static uint16_t* decodePng(const std::string& data, int& w, int& h) {
+    PNG* p = new PNG();
+    if (p->openRAM((uint8_t*)data.data(), (int)data.size(), pngDraw) != 0) { Serial.printf("[img] png openRAM fail\n"); delete p; return nullptr; }
+    int sw = p->getWidth(), sh = p->getHeight();
+    Serial.printf("[img] png dims %dx%d\n", sw, sh);
+    // PNGdec's line buffer must hold 2 lines; cap width to what it safely holds
+    // (worst case RGBA = 4 bytes/px). PNGdec's own check is 2x too permissive.
+    int maxW = (PNG_MAX_BUFFERED_PIXELS / 2 - 16) / 4;
+    if (sw <= 0 || sh <= 0 || sw > maxW || (long)sw * sh > kMaxPixels || sh > kMaxDim) {
+        Serial.printf("[img] png too big %dx%d (max %d)\n", sw, sh, maxW);
+        p->close(); delete p; return nullptr;
+    }
+    uint16_t* buf = (uint16_t*)heap_caps_malloc((size_t)sw * sh * 2, MALLOC_CAP_SPIRAM);
+    if (!buf) { p->close(); delete p; return nullptr; }
+    g_png.out = buf; g_png.w = sw; g_png.h = sh;
+    int rc = p->decode(nullptr, PNG_CHECK_CRC);
+    p->close(); delete p;
+    if (rc != 0) { Serial.printf("[img] png decode rc=%d\n", rc); heap_caps_free(buf); return nullptr; }
+    w = sw; h = sh;
+    return buf;
+}
+
+/// Decode a downloaded image into a PSRAM RGB565 buffer (w*h). JPEG is decoded
+/// directly to ~target size by esp_new_jpeg; PNG is decoded full-res. nullptr on failure.
 static uint16_t* decodeAny(const std::string& data, int& w, int& h) {
-    if (isJpeg(data)) {
-        JPEGDEC* j = new JPEGDEC();
-        if (j->openRAM((uint8_t*)data.data(), (int)data.size(), jpegDraw) == 0) { Serial.printf("[img] jpeg openRAM fail\n"); delete j; return nullptr; }
-        int sw = j->getWidth(), sh = j->getHeight();
-        if (sw <= 0 || sh <= 0 || (long)sw * sh > kMaxPixels || sw > kMaxDim || sh > kMaxDim) { Serial.printf("[img] jpeg too big %dx%d\n", sw, sh); j->close(); delete j; return nullptr; }
-        uint16_t* buf = (uint16_t*)heap_caps_malloc((size_t)sw * sh * 2, MALLOC_CAP_SPIRAM);
-        if (!buf) { j->close(); delete j; return nullptr; }
-        g_jpg.out = buf; g_jpg.w = sw; g_jpg.h = sh;
-        int rc = j->decode(0, 0, 0);
-        j->close(); delete j;
-        if (rc == 0) { Serial.printf("[img] jpeg decode fail\n"); heap_caps_free(buf); return nullptr; }
-        w = sw; h = sh;
-        return buf;
-    }
-    if (isPng(data)) {
-        PNG* p = new PNG();
-        if (p->openRAM((uint8_t*)data.data(), (int)data.size(), pngDraw) != 0) { Serial.printf("[img] png openRAM fail\n"); delete p; return nullptr; }
-        int sw = p->getWidth(), sh = p->getHeight();
-        Serial.printf("[img] png dims %dx%d\n", sw, sh);
-        if (sw <= 0 || sh <= 0 || (long)sw * sh > kMaxPixels || sw > kMaxDim || sh > kMaxDim) { p->close(); delete p; return nullptr; }
-        uint16_t* buf = (uint16_t*)heap_caps_malloc((size_t)sw * sh * 2, MALLOC_CAP_SPIRAM);
-        if (!buf) { p->close(); delete p; return nullptr; }
-        g_png.out = buf; g_png.w = sw; g_png.h = sh;
-        int rc = p->decode(nullptr, PNG_CHECK_CRC);
-        p->close(); delete p;
-        if (rc != 0) { Serial.printf("[img] png decode rc=%d\n", rc); heap_caps_free(buf); return nullptr; }
-        w = sw; h = sh;
-        return buf;
-    }
+    if (isJpeg(data)) return decodeJpeg(data, w, h);
+    if (isPng(data))  return decodePng(data, w, h);
     return nullptr;
 }
 
@@ -182,30 +267,40 @@ bool g_started = false;
 std::string cachePathFor(const std::string& url) { return std::string(kDir) + "/" + hash16(url) + ".bmp"; }
 
 void processOne(const std::string& url) {
+    // The worker runs off the UI flow, so it must bring the radio up itself.
+    // Without a connected STA the first netconn DNS/connect from this background
+    // task hits an uninitialized lwIP core mutex and asserts (cold-boot crash).
+    if (!net::ensureWifi()) { Serial.printf("[img] skip %s: no wifi\n", url.c_str()); return; }
+    size_t maxB = urlMaxBytes(url);
     std::string data, ct, finalUrl, err;
     net::Client c;
-    if (!c.fetchBinary(url, data, ct, kMaxBytes, finalUrl, err, 20000)) {
+    if (!c.fetchBinary(url, data, ct, maxB, finalUrl, err, 20000)) {
         Serial.printf("[img] skip %s: %s\n", url.c_str(), err.c_str());
         return;
     }
     int sw = 0, sh = 0;
-    uint16_t* full = decodeAny(data, sw, sh);
-    if (!full) { Serial.printf("[img] decode fail %s (unsupported/too big)\n", url.c_str()); return; }
+    uint16_t* buf = decodeAny(data, sw, sh);
+    if (!buf) { Serial.printf("[img] decode fail %s (unsupported/too big)\n", url.c_str()); return; }
 
+    std::string path = cachePathFor(url);
+    // esp_new_jpeg already returns a target-size buffer; only downscale if still too big
+    // (e.g. a huge image clamped to 1/8 by the decoder, or a full-res PNG).
+    if (sw <= kOutW && sh <= kOutH) {
+        bool ok = writeBmp16(path, buf, sw, sh);
+        Serial.printf("[img] %s %s -> %dx%d BMP\n", ok ? "ok" : "FAIL", url.c_str(), sw, sh);
+        heap_caps_free(buf);
+        return;
+    }
     double scale = std::min((double)kOutW / sw, (double)kOutH / sh);
     if (scale > 1.0) scale = 1.0;
     int tw = (int)(sw * scale), th = (int)(sh * scale);
     if (tw < 1) tw = 1; if (th < 1) th = 1;
     uint16_t* small = (uint16_t*)heap_caps_malloc((size_t)tw * th * 2, MALLOC_CAP_SPIRAM);
-    if (!small) { heap_caps_free(full); return; }
-    downscale(full, sw, sh, small, tw, th);
-    heap_caps_free(full);
-
-    std::string path = cachePathFor(url);
-    if (writeBmp16(path, small, tw, th))
-        Serial.printf("[img] ok %s -> %dx%d BMP %s\n", url.c_str(), tw, th, path.c_str());
-    else
-        Serial.printf("[img] BMP write fail %s\n", path.c_str());
+    if (!small) { heap_caps_free(buf); return; }
+    downscale(buf, sw, sh, small, tw, th);
+    heap_caps_free(buf);
+    bool ok = writeBmp16(path, small, tw, th);
+    Serial.printf("[img] %s %s -> %dx%d BMP\n", ok ? "ok" : "FAIL", url.c_str(), tw, th);
     heap_caps_free(small);
 }
 
@@ -249,7 +344,7 @@ void begin() {
     if (!g_mu)  g_mu  = xSemaphoreCreateMutex();
     // counting semaphore (max 256 jobs) so one signal per queued image is honoured
     if (!g_sem) g_sem = xSemaphoreCreateCounting(256, 0);
-    xTaskCreatePinnedToCore(worker, "imgworker", 24576, nullptr, 2, nullptr, 1);
+    xTaskCreatePinnedToCore(worker, "imgworker", 40960, nullptr, 2, nullptr, 1);
     xTaskCreatePinnedToCore(watchdog, "imgwdog", 4096, nullptr, 1, nullptr, 0);
     Serial.printf("[img] worker started\n");
 }

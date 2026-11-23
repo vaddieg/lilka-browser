@@ -753,6 +753,15 @@ void Browser::serialCmd(const std::string& in) {
         }
         return;
     }
+    if (line.rfind("imgone", 0) == 0) {
+        std::string u = line.substr(6);
+        while (!u.empty() && u.front() == ' ') u.erase(u.begin());
+        if (u.empty()) { Serial.printf("[cmd] usage: imgone <url>\n"); return; }
+        img::clear();
+        img::queue({u});
+        Serial.printf("[cmd] imgone queued: %s\n", u.c_str());
+        return;
+    }
     if (line == "qlist") {
         auto l = quickList();
         Serial.printf("[cmd] sel=%d\n", linklistSel_);

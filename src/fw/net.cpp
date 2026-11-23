@@ -338,6 +338,13 @@ bool connect(const std::string& ssid, const std::string& pass, int timeoutMs) {
     return WiFi.status() == WL_CONNECTED;
 }
 
+bool ensureWifi(int timeoutMs) {
+    if (WiFi.status() == WL_CONNECTED) return true;
+    std::string ssid, pass;
+    if (!wifiCreds(ssid, pass)) return false;
+    return connect(ssid, pass, timeoutMs);
+}
+
 // ---------------------------------------------------------------- client
 
 StageFn g_stageFn = nullptr;

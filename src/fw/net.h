@@ -164,4 +164,10 @@ bool wifiCreds(std::string& ssid, std::string& pass);
 /// Connect STA mode; true on success.
 bool connect(const std::string& ssid, const std::string& pass, int timeoutMs);
 
+/// Ensure the radio is connected (no-op if already up). Worker-safe: the image
+/// pipeline runs off the UI flow, so it must establish Wi-Fi itself before doing
+/// any netconn work — otherwise a cold-boot first DNS/connect from a background
+/// task hits an uninitialized lwIP core mutex and crashes.
+bool ensureWifi(int timeoutMs = 15000);
+
 }  // namespace net

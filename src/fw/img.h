@@ -9,10 +9,12 @@
 
 namespace img {
 
-constexpr int kMaxBytes  = 256 * 1024;  // skip files bigger than this
-constexpr int kMaxPixels = 1500000;     // skip images whose full-res buffer is huge
-constexpr int kMaxDim    = 4096;        // hard cap on a single dimension
-constexpr int kOutW = 240, kOutH = 180; // max rendered size (proportional)
+// Per-format download caps (checked by URL extension before fetching).
+constexpr int kMaxJpegBytes = 512 * 1024;  // JPEG (esp_new_jpeg decodes at target size, so bigger is fine)
+constexpr int kMaxPngBytes  = 128 * 1024;  // PNG (PNGdec buffers full-res in PSRAM, so keep it small)
+constexpr int kMaxPixels = 1500000;        // skip images whose full-res buffer is huge
+constexpr int kMaxDim    = 4096;           // hard cap on a single dimension
+constexpr int kOutW = 240, kOutH = 180;    // max rendered size (proportional)
 
 void begin();                                          // make /browser/img + spawn worker task
 void queue(const std::vector<std::string>& urls);      // enqueue (document order, dedup)

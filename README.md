@@ -73,10 +73,19 @@ make loop
 - Wi-Fi credentials come from Keira NVS (`network` namespace, as in lilka-boombox).
 - TLS cert validation is off (`setInsecure`) — no CA store on device; document the risk.
 - Cookies are ignored in v1 (GET-only navigation).
-- **Images:** after a page loads, `<img>` sources (`.jpg`/`.jpeg`/`.png` only, ≤256 KB,
-  pixel-capped) are fetched one-by-one in a background task on core 1 (`src/fw/img.cpp`),
-  decoded with bitbank2 JpegDEC / PNGdec, down-scaled to ≤240×180, and cached as 16-bit
-  BMPs in `/browser/img/`. All buffers live in PSRAM; a watchdog reboots if a single
-  image wedges the worker so image loading never stays dead.
+- **Images:** after a page loads, `<img>` sources (`.jpg`/`.jpeg`/`.png` only) are
+  fetched one-by-one in a background task on core 1 (`src/fw/img.cpp`), decoded,
+  down-scaled to ≤240×180, and cached as 16-bit BMPs in `/browser/img/`.
+  - **JPEG** (≤512 KB) is decoded by **esp_new_jpeg**, which scales straight to the
+    target resolution, so the PSRAM buffer is only the output size (not the source).
+    bitbank2 JpegDEC is the fallback (handles progressive JPEG, which esp_new_jpeg
+    doesn't).
+  - **PNG** (≤128 KB) is decoded by bitbank2 PNGdec (full-res into PSRAM). PNGdec's
+    line buffer is sized globally via `PNG_MAX_BUFFERED_PIXELS` (build flag) so
+    ~640px-wide RGBA PNGs unfilter without overflowing.
+  - All buffers live in PSRAM; a watchdog reboots if a single image wedges the worker
+    so image loading never stays dead. The worker brings Wi-Fi up itself (it runs off
+    the UI flow), since a cold-boot first netconn call from a background task otherwise
+    hits an uninitialized lwIP core mutex.
 - UA: see `docs/UA-RESEARCH.md`; ideas for later: `docs/IDEAS.md`;
   serial debug commands: `docs/DEBUG-CLI.md`.
