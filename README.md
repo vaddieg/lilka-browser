@@ -1,7 +1,9 @@
 # Lilka browser
 
 Basic HTML browser firmware for the DIY Lilka console (ESP32-S3, ST7789 280x240).
-Streams a page, strips JS/CSS, renders a vertical list of links / text / inputs.
+Streams a page, strips JS/CSS, renders a vertical list of links / text / inputs —
+and background-downloads the page's images (JPEG/PNG), converts them to 16-bit
+BMPs scaled to ≤240×180, and shows them inline as they arrive.
 Think Opera Mini for a 240x280 screen. See `TASK.md` for requirements.
 
 ## Layout
@@ -71,5 +73,10 @@ make loop
 - Wi-Fi credentials come from Keira NVS (`network` namespace, as in lilka-boombox).
 - TLS cert validation is off (`setInsecure`) — no CA store on device; document the risk.
 - Cookies are ignored in v1 (GET-only navigation).
+- **Images:** after a page loads, `<img>` sources (`.jpg`/`.jpeg`/`.png` only, ≤256 KB,
+  pixel-capped) are fetched one-by-one in a background task on core 1 (`src/fw/img.cpp`),
+  decoded with bitbank2 JpegDEC / PNGdec, down-scaled to ≤240×180, and cached as 16-bit
+  BMPs in `/browser/img/`. All buffers live in PSRAM; a watchdog reboots if a single
+  image wedges the worker so image loading never stays dead.
 - UA: see `docs/UA-RESEARCH.md`; ideas for later: `docs/IDEAS.md`;
   serial debug commands: `docs/DEBUG-CLI.md`.

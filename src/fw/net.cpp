@@ -3,9 +3,31 @@
 #include "store.h"
 #include <Preferences.h>
 #include <WiFi.h>
+#include <FreeRTOS.h>
+#include <semphr.h>
+#include <atomic>
 #include <cstring>
 
 namespace net {
+
+namespace {
+std::atomic<bool> g_cancel{false};
+SemaphoreHandle_t g_netLock = nullptr;
+void netLockInit() {
+    if (!g_netLock) g_netLock = xSemaphoreCreateMutex();
+}
+}
+
+NetGuard::NetGuard() {
+    netLockInit();
+    if (g_netLock) xSemaphoreTake(g_netLock, portMAX_DELAY);
+    g_cancel = false;  // whoever holds the lock owns the request; clear any stale cancel
+}
+NetGuard::~NetGuard() {
+    if (g_netLock) xSemaphoreGive(g_netLock);
+}
+void requestCancel() { g_cancel = true; }
+bool cancelled() { return g_cancel.load(); }
 
 std::string Url::toString() const {
     std::string s = scheme + "://";
@@ -550,6 +572,7 @@ bool Client::request(const Url& u, std::string& body, std::string& location,
                      std::string& err, int timeoutMs, const std::string& userAgent,
                      int& status, const std::string& method, const std::string& postBody,
                      const std::string& ifNoneMatch, const std::string& ifModifiedSince) {
+    NetGuard guard;
     WiFiClientSecure client;
     if (!open(u, timeoutMs, client, err)) return false;
 
@@ -687,6 +710,7 @@ bool Client::get(const std::string& url, std::string& outBody, std::string& outF
 long Client::download(const std::string& url, const std::string& sdPath,
                       std::string& err, std::string& finalUrl, std::string& outContentType,
                       int timeoutMs, int maxRedirects, const std::string& userAgent) {
+    NetGuard guard;
     std::string cur = rewriteUrl(url);
     for (int i = 0; i <= maxRedirects; i++) {
         Url u;
@@ -835,6 +859,120 @@ long Client::download(const std::string& url, const std::string& sdPath,
     }
     err = "too many redirects";
     return -1;
+}
+
+bool Client::fetchBinary(const std::string& url, std::string& out, std::string& outContentType,
+                         long maxSize, std::string& outFinalUrl, std::string& err,
+                         int timeoutMs, int maxRedirects) {
+    NetGuard guard;
+    std::string cur = rewriteUrl(url);
+    for (int i = 0; i <= maxRedirects; i++) {
+        Url u;
+        if (!parseUrl(cur, u)) { err = "bad url"; return false; }
+
+        WiFiClientSecure client;
+        if (!open(u, timeoutMs, client, err)) return false;
+        client.setNoDelay(true);  // non-blocking: read() must not wedge the worker
+
+        std::string cookieHdr = getCookieHeader(u.host);
+        std::string req = "GET " + u.path + " HTTP/1.1\r\n"
+                          "Host: " + u.host + "\r\n"
+                          "User-Agent: Lilka/1.0 (ESP32-S3; browser)\r\n"
+                          "Accept: image/jpeg,image/png,*/*;q=0.2\r\n"
+                          "Accept-Encoding: identity\r\n" +
+                          (cookieHdr.empty() ? "" : ("Cookie: " + cookieHdr + "\r\n")) +
+                          "Connection: close\r\n\r\n";
+        client.print(req.c_str());
+
+        std::string line;
+        if (!readLine(client, line) || line.empty()) { err = "no response"; client.stop(); return false; }
+        size_t sp = line.find(' ');
+        int status = (sp == std::string::npos) ? 0 : (int)strtol(line.c_str() + sp + 1, nullptr, 10);
+        bool chunked = false; long contentLength = -1; std::string contentType, location;
+        for (;;) {
+            if (!readLine(client, line)) break;
+            if (line.empty()) break;
+            size_t c = line.find(':');
+            if (c == std::string::npos) continue;
+            std::string k = line.substr(0, c), v = line.substr(c + 1);
+            for (auto& ch : k) ch = (char)tolower((unsigned char)ch);
+            size_t vs = v.find_first_not_of(" \t");
+            if (vs != std::string::npos) v = v.substr(vs);
+            if (k == "set-cookie") parseSetCookie(u.host, v);
+            else if (k == "location") {
+                std::string clean;
+                for (char ch : v) if (ch != '<' && ch != '>' && ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') clean += ch;
+                location = clean;
+            }
+            else if (k == "content-length") contentLength = atol(v.c_str());
+            else if (k == "transfer-encoding") { if (v.find("chunked") != std::string::npos) chunked = true; }
+            else if (k == "content-type") contentType = v;
+        }
+        if (status >= 300 && status < 400 && !location.empty()) {
+            cur = resolve(u, location); client.stop(); continue;
+        }
+        if (status != 200) { err = "http " + std::to_string(status); client.stop(); return false; }
+
+        // type check: only jpeg/png
+        std::string ct = contentType;
+        for (auto& ch : ct) ch = (char)tolower((unsigned char)ch);
+        outContentType = ct;
+        bool okType = ct.rfind("image/jpeg", 0) == 0 || ct.rfind("image/png", 0) == 0;
+        if (!okType) { client.stop(); err = "not an image (" + ct + ")"; return false; }
+
+        // stream into `out` with a hard size cap + cancel check
+        if (contentLength > maxSize) { client.stop(); err = "too large (" + std::to_string(contentLength) + ")"; return false; }
+        out.clear();
+        uint32_t t0 = millis(); uint32_t lastData = t0;
+        uint8_t buf[4096];
+        if (chunked) {
+            std::string sizeLine;
+            for (;;) {
+                if (cancelled()) { err = "cancelled"; break; }
+                if (millis() - t0 > (uint32_t)timeoutMs) { err = "timeout"; break; }
+                if (millis() - lastData > 10000) { err = "stall"; break; }
+                if (!readLine(client, sizeLine)) { err = "chunk read fail"; break; }
+                long sz = strtol(sizeLine.c_str(), nullptr, 16);
+                if (sz <= 0) break;
+                while (sz > 0) {
+                    if (cancelled()) { err = "cancelled"; break; }
+                    if (millis() - lastData > 10000) { err = "stall"; break; }
+                    if (!client.available()) { delay(2); continue; }
+                    int want = (int)(sz < (long)sizeof(buf) ? sz : (long)sizeof(buf));
+                    int n = client.read(buf, (size_t)want);
+                    if (n <= 0) continue;
+                    out.append((char*)buf, n); lastData = millis(); sz -= n;
+                    if ((long)out.size() > maxSize) { err = "too large"; break; }
+                }
+                if (!err.empty()) break;
+                if (!readLine(client, sizeLine)) { err = "chunk CRLF fail"; break; }
+            }
+        } else {
+            for (;;) {
+                if (contentLength > 0 && (long)out.size() >= contentLength) break;
+                if (cancelled()) { err = "cancelled"; break; }
+                if (millis() - t0 > (uint32_t)timeoutMs) { err = "timeout"; break; }
+                if (millis() - lastData > 10000) { err = "stall"; break; }
+                if (client.available()) {
+                    int n = client.read(buf, sizeof(buf));
+                    if (n > 0) {
+                        out.append((char*)buf, n); lastData = millis();
+                        if ((long)out.size() > maxSize) { err = "too large"; break; }
+                        continue;
+                    }
+                }
+                if (!client.connected()) break;
+                delay(2);
+            }
+        }
+        client.stop();
+        if (!err.empty()) return false;
+        Serial.printf("[img] fetched %s (%u bytes) %s\n", u.host.c_str(), (unsigned)out.size(), ct.c_str());
+        outFinalUrl = u.toString();
+        return true;
+    }
+    err = "too many redirects";
+    return false;
 }
 
 bool Client::getCond(const std::string& url, std::string& outBody, std::string& outFinalUrl,

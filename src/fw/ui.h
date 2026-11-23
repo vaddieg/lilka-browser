@@ -16,7 +16,8 @@ struct Line {
     bool pseudo = false; // ellipsis / table / select line
     bool field = false;  // input field: draw rectangle outline around caption
     bool btn = false;    // button: draw button box
-    std::string href;    // table row: link target (A opens it)
+    std::string href;    // table row: link target (A opens it); image line: image URL
+    bool img = false;    // image line: href holds the image URL, blit its cached BMP
 };
 
 class Browser {
@@ -38,6 +39,7 @@ private:
     std::string lastHtml_;  // for the `dump` serial command
     std::vector<Line> lines_;
     std::vector<std::pair<std::string, std::string>> links_; // linklist mode: label,url
+    std::vector<std::string> pageImages_;  // ordered image URLs for the current page
 
     int lineCursor_ = 0;
     int sel_ = -1;            // selected clickable line (into lines_)
@@ -85,6 +87,9 @@ private:
     std::vector<std::string> recentList() const;
     bool clickable(int lineIdx) const;
     void buildLines();
+    static std::vector<std::string> collectImageUrls(const std::string& html, const std::string& baseUrl);
+    void renderImageLine(int i, int& y);
+    int lastImgStatus_ = -1;   // last img::done() we rendered (for live redraw)
     void navigate(const std::string& url, bool fromRedirect = false);
     std::vector<std::pair<std::string, std::string>> withChecks(const lilka::Block& b) const;
     std::vector<std::pair<std::string, std::string>> withChecksFields(

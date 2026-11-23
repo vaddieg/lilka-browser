@@ -2,6 +2,7 @@
 #include "font.h"
 #include "net.h"
 #include "store.h"
+#include "img.h"
 #include "html_parser.h"
 #include "charset.h"
 #include <WiFi.h>
@@ -118,6 +119,7 @@ bool Browser::begin(Arduino_GFX* gfx) {
         compact_ = (store::get("compact", "0") == "1");
         net::loadCookieJar();
         qsCache_ = quickList();
+        img::begin();   // background image worker (core 1) + /browser/img dir
     }
     history_.push_back("");  // home slot
     currentUrl_ = "";
@@ -199,6 +201,98 @@ void Browser::findNext(bool forward) {
     lineCursor_ = findMatches_[findPos_];
 }
 
+std::vector<std::string> Browser::collectImageUrls(const std::string& html, const std::string& baseUrl) {
+    std::vector<std::string> out;
+    auto decodeEnt = [](std::string s) {
+        std::string r; r.reserve(s.size());
+        size_t i = 0;
+        while (i < s.size()) {
+            if (s[i] == '&') {
+                size_t semi = s.find(';', i);
+                if (semi != std::string::npos && semi - i <= 10) {
+                    std::string e = s.substr(i, semi - i + 1);
+                    if (e == "&amp;") { r += '&'; i = semi + 1; continue; }
+                    if (e == "&lt;") { r += '<'; i = semi + 1; continue; }
+                    if (e == "&gt;") { r += '>'; i = semi + 1; continue; }
+                    if (e == "&quot;") { r += '"'; i = semi + 1; continue; }
+                    if (e == "&apos;" || e == "&#39;") { r += '\''; i = semi + 1; continue; }
+                    if (e.size() > 4 && e[1] == '#' && e[2] != 'x' && e[2] != 'X') {
+                        long code = 0; bool okc = true;
+                        for (size_t k = 2; k + 1 < e.size(); k++) { if (e[k] < '0' || e[k] > '9') { okc = false; break; } code = code * 10 + (e[k] - '0'); }
+                        if (okc && code >= 32 && code < 128) { r += (char)code; i = semi + 1; continue; }
+                    }
+                }
+            }
+            r += s[i++];
+        }
+        return r;
+    };
+    auto addUrl = [&](std::string u) {
+        while (!u.empty() && (u.front()==' '||u.front()=='\t'||u.front()=='\n'||u.front()=='\r')) u.erase(u.begin());
+        while (!u.empty() && (u.back()==' '||u.back()=='\t'||u.back()=='\r'||u.back()=='\n')) u.pop_back();
+        if (u.empty()) return;
+        u = decodeEnt(u);
+        std::string low; for (auto ch : u) low += (char)tolower((unsigned char)ch);
+        if (low.rfind("data:",0)==0 || low.rfind("javascript:",0)==0 || low.rfind("about:",0)==0) return;
+        // judge the extension on the path only (strip ?query and #fragment)
+        size_t q = low.find_first_of("?#");
+        std::string p = (q == std::string::npos) ? low : low.substr(0, q);
+        bool ok = (p.size()>4 && p.compare(p.size()-4, 4, ".jpg")==0)
+              || (p.size()>5 && p.compare(p.size()-5, 5, ".jpeg")==0)
+              || (p.size()>4 && p.compare(p.size()-4, 4, ".png")==0);
+        if (!ok) return;
+        std::string resolved = u;
+        { net::Url base; if (net::parseUrl(baseUrl, base)) resolved = net::resolve(base, u); }
+        for (auto& s : out) if (s == resolved) return;
+        out.push_back(resolved);
+    };
+    size_t i = 0;
+    while (i < html.size()) {
+        size_t s = html.find("src=", i);
+        size_t u2 = html.find("url(", i);
+        size_t ss = (s == std::string::npos) ? html.size() : s;
+        size_t uu = (u2 == std::string::npos) ? html.size() : u2;
+        if (ss >= html.size() && uu >= html.size()) break;
+        if (uu < ss) {
+            size_t open = u2 + 4;
+            while (open < html.size() && (html[open]==' '||html[open]=='\t'||html[open]=='"'||html[open]=='\'')) open++;
+            size_t close = html.find_first_of(")\"'", open);
+            if (close != std::string::npos) { addUrl(html.substr(open, close - open)); i = close + 1; }
+            else break;
+        } else {
+            size_t open = ss + 4;
+            while (open < html.size() && html[open]==' ') open++;
+            char quote = 0;
+            if (open < html.size() && (html[open]=='"'||html[open]=='\'')) { quote = html[open]; open++; }
+            size_t end;
+            if (quote) { end = html.find(quote, open); if (end == std::string::npos) end = html.size() - 1; }
+            else { end = open; while (end < html.size() && html[end]!=' '&&html[end]!='>'&&html[end]!='\t'&&html[end]!='\n') end++; }
+            addUrl(html.substr(open, end - open));
+            i = (quote ? end + 1 : end);
+            if (i == 0) i = 1;
+        }
+    }
+    return out;
+}
+
+void Browser::renderImageLine(int i, int& y) {
+    const Line& l = lines_[i];
+    int w = gfx_->width() - 12;
+    if (img::ready(l.href)) {
+        std::vector<uint16_t> px; int iw = 0, ih = 0;
+        if (img::loadBmp(l.href, px, iw, ih) && iw > 0 && ih > 0) {
+            gfx_->draw16bitRGBBitmap((gfx_->width() - iw) / 2, y, px.data(), iw, ih);
+            y += ih + 4;
+            return;
+        }
+    }
+    int ph = 44;
+    gfx_->drawRect(6, y, w, ph, C_DIM);
+    font::text(gfx_, 10, y + 6, font::fit(l.text.c_str(), w - 8, 1), C_DIM, 1);
+    font::text(gfx_, 10, y + 22, img::busy() ? "downloading..." : "(unavailable)", C_DIM, 1);
+    y += ph + 4;
+}
+
 void Browser::buildLines() {
     // any rebuild invalidates find match indices
     findActive_ = false; findMatches_.clear(); findTerm_.clear(); findPos_ = 0;
@@ -261,6 +355,16 @@ void Browser::buildLines() {
                 lines_.push_back({i, buf, false});
                 break;
             }
+        }
+    }
+    // image lines (background-downloaded, one per image, in document order)
+    if (!pageImages_.empty()) {
+        for (auto& u : pageImages_) {
+            std::string name;
+            { std::string t = u; size_t q = t.find_first_of("?#"); if (q != std::string::npos) t = t.substr(0, q); size_t sl = t.find_last_of('/'); name = (sl == std::string::npos) ? t : t.substr(sl + 1); }
+            if (name.empty()) name = "image";
+            Line il; il.block = -1; il.text = name; il.pseudo = true; il.href = u; il.img = true;
+            lines_.push_back(std::move(il));
         }
     }
     lineCursor_ = 0;
@@ -374,6 +478,7 @@ void Browser::navigate(const std::string& urlIn, bool fromRedirect) {
     net::setStageFn([](const char* s) { g_browser.onStage(s); });
     std::string lang = store::get("lang", "uk");
     net::setAcceptLanguage(lang == "uk" ? "uk,ru;q=0.8" : lang == "ru" ? "ru,en;q=0.8" : "en");
+    img::clear();  // stop any in-flight background images from the previous page
     busyStage_ = "start";
     busyDownload_ = false;
     busyUrl_ = url;
@@ -565,6 +670,14 @@ void Browser::finishLoad(const std::string& url, std::string html, const std::st
     p.feed(html.data(), html.size());
     p.finish();
     page_ = std::move(p.page());
+    // kick off background image downloads (core 1) before we build the lines so
+    // the image placeholders are part of the page from the first paint.
+    {
+        std::string base = finalUrl.empty() ? url : finalUrl;
+        pageImages_ = collectImageUrls(html, base);
+        lastImgStatus_ = -1;
+        img::queue(pageImages_);  // no-op if the list is empty
+    }
     lastHtml_.swap(html);  // keep for the `dump` serial command
     Serial.printf("[nav] blocks=%u title=%s\n", (unsigned)page_.blocks.size(), page_.title.c_str());
 
@@ -626,6 +739,26 @@ void Browser::serialCmd(const std::string& in) {
     if (line == "heap") {
         Serial.printf("[cmd] heap free=%u psram=%u\n", (unsigned)ESP.getFreeHeap(),
                       (unsigned)ESP.getFreePsram());
+        return;
+    }
+    if (line == "imgls") {
+        std::string ls; img::listDir(ls);
+        Serial.printf("[cmd] /browser/img -> %s\n", ls.c_str());
+        return;
+    }
+    if (line == "imgtest") {
+        auto found = collectImageUrls(lastHtml_, currentUrl_.empty() ? lastHtml_ : currentUrl_);
+        Serial.printf("[cmd] imgtest: base=%s found=%d\n", currentUrl_.c_str(), (int)found.size());
+        for (size_t i = 0; i < found.size() && i < 10; i++) Serial.printf("[cmd]   %s\n", found[i].c_str());
+        return;
+    }
+    if (line == "img") {
+        Serial.printf("[cmd] images: %d total, %d done, busy=%d (%s)\n",
+                      img::total(), img::done(), (int)img::busy(), img::statusText());
+        for (size_t i = 0; i < pageImages_.size(); i++) {
+            Serial.printf("[cmd] img[%u]: %s ready=%d\n", (unsigned)i,
+                          pageImages_[i].c_str(), (int)img::ready(pageImages_[i]));
+        }
         return;
     }
     if (line == "qlist") {
@@ -1181,6 +1314,13 @@ bool Browser::loop() {
 
     if (act) dirty_ = true;
 
+    // Live refresh: when a background image lands (done-count changes) while we
+    // are viewing the page, repaint so the placeholder turns into the image.
+    if (mode_ == PAGE && !pageImages_.empty()) {
+        int d = img::done();
+        if (d != lastImgStatus_) { lastImgStatus_ = d; dirty_ = true; }
+    }
+
     if (dirty_) {
         switch (mode_) {
             case PAGE: renderPage(); break;
@@ -1258,6 +1398,15 @@ void Browser::renderPage() {
         if (y + lh > gfx_->height() - kFooterH) break;
         uint8_t scale = lineScale(i);
         const Line& l = lines_[i];
+        if (l.img) {
+            if (i == 0 || !lines_[i - 1].img) {  // section label before the first image
+                font::text(gfx_, 6, y, (std::string("Images  ") + img::statusText()).c_str(), C_DIM, 1);
+                y += 14;
+            }
+            renderImageLine(i, y);
+            vis++;
+            continue;
+        }
         uint16_t c = 0xFFFF;
         if (l.block >= 0 && l.block < (int)page_.blocks.size()) {
             auto k = page_.blocks[l.block].kind;

@@ -48,6 +48,19 @@ const std::string& lastModified();
 /// True if the last GET answered 304 Not Modified (body is empty; reuse cache).
 bool lastNotModified();
 
+// --- Concurrency (background image worker on core 1) ---
+/// Global lock: only one network request in flight at a time (page fetch vs.
+/// image worker). Public fetch methods hold this for the duration.
+struct NetGuard {
+    NetGuard();
+    ~NetGuard();
+    NetGuard(const NetGuard&) = delete;
+    NetGuard& operator=(const NetGuard&) = delete;
+};
+/// Ask any in-flight background fetch to abort promptly (checked per chunk).
+void requestCancel();
+bool cancelled();
+
 /// Resolve `ref` against `base` (RFC 3986-ish, no fragments).
 std::string resolve(const Url& base, const std::string& ref);
 
@@ -77,6 +90,14 @@ public:
                  int timeoutMs = 15000, int maxRedirects = 5,
                  const std::string& userAgent =
                      "Lilka/1.0 (ESP32-S3; browser; +https://github.com/lilka-dev/lilka)");
+
+    /// Fetch a binary (image) into `out` (PSRAM), streaming with a hard size cap.
+    /// Only accepts image/jpeg / image/png; aborts (returns false) on other types,
+    /// oversize bodies, or a concurrent requestCancel(). Follows a few redirects.
+    /// `outContentType` receives the (lowercased) main MIME type.
+    bool fetchBinary(const std::string& url, std::string& out, std::string& outContentType,
+                     long maxSize, std::string& outFinalUrl, std::string& err,
+                     int timeoutMs = 20000, int maxRedirects = 4);
 
     /// POST `form` (application/x-www-form-urlencoded) to `url`.
     /// Redirects are followed with GET (browser behavior for 301/302/303).
