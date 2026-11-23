@@ -71,6 +71,8 @@ uint8_t Browser::lineScale(int lineIdx) const {
 }
 
 int Browser::lineH(int lineIdx) const {
+    if (lineIdx >= 0 && lineIdx < (int)lines_.size() && lines_[lineIdx].img)
+        return lines_[lineIdx].phh > 0 ? lines_[lineIdx].phh : 90;
     uint8_t s = lineScale(lineIdx);
     return s >= 3 ? 42 : (s >= 2 ? 22 : 15);
 }
@@ -201,95 +203,55 @@ void Browser::findNext(bool forward) {
     lineCursor_ = findMatches_[findPos_];
 }
 
-std::vector<std::string> Browser::collectImageUrls(const std::string& html, const std::string& baseUrl) {
+// Download queue derived from the parsed <img> blocks (in document order), so the
+// on-page placeholder positions match what actually gets fetched.
+std::vector<std::string> Browser::imageUrlsFromBlocks(const std::string& baseUrl) {
     std::vector<std::string> out;
-    auto decodeEnt = [](std::string s) {
-        std::string r; r.reserve(s.size());
-        size_t i = 0;
-        while (i < s.size()) {
-            if (s[i] == '&') {
-                size_t semi = s.find(';', i);
-                if (semi != std::string::npos && semi - i <= 10) {
-                    std::string e = s.substr(i, semi - i + 1);
-                    if (e == "&amp;") { r += '&'; i = semi + 1; continue; }
-                    if (e == "&lt;") { r += '<'; i = semi + 1; continue; }
-                    if (e == "&gt;") { r += '>'; i = semi + 1; continue; }
-                    if (e == "&quot;") { r += '"'; i = semi + 1; continue; }
-                    if (e == "&apos;" || e == "&#39;") { r += '\''; i = semi + 1; continue; }
-                    if (e.size() > 4 && e[1] == '#' && e[2] != 'x' && e[2] != 'X') {
-                        long code = 0; bool okc = true;
-                        for (size_t k = 2; k + 1 < e.size(); k++) { if (e[k] < '0' || e[k] > '9') { okc = false; break; } code = code * 10 + (e[k] - '0'); }
-                        if (okc && code >= 32 && code < 128) { r += (char)code; i = semi + 1; continue; }
-                    }
-                }
-            }
-            r += s[i++];
-        }
-        return r;
-    };
-    auto addUrl = [&](std::string u) {
-        while (!u.empty() && (u.front()==' '||u.front()=='\t'||u.front()=='\n'||u.front()=='\r')) u.erase(u.begin());
-        while (!u.empty() && (u.back()==' '||u.back()=='\t'||u.back()=='\r'||u.back()=='\n')) u.pop_back();
-        if (u.empty()) return;
-        u = decodeEnt(u);
-        std::string low; for (auto ch : u) low += (char)tolower((unsigned char)ch);
-        if (low.rfind("data:",0)==0 || low.rfind("javascript:",0)==0 || low.rfind("about:",0)==0) return;
-        // judge the extension on the path only (strip ?query and #fragment)
+    auto extOk = [](const std::string& u) {
+        std::string low; for (char ch : u) low += (char)tolower((unsigned char)ch);
         size_t q = low.find_first_of("?#");
         std::string p = (q == std::string::npos) ? low : low.substr(0, q);
-        bool ok = (p.size()>4 && p.compare(p.size()-4, 4, ".jpg")==0)
-              || (p.size()>5 && p.compare(p.size()-5, 5, ".jpeg")==0)
-              || (p.size()>4 && p.compare(p.size()-4, 4, ".png")==0);
-        if (!ok) return;
-        std::string resolved = u;
-        { net::Url base; if (net::parseUrl(baseUrl, base)) resolved = net::resolve(base, u); }
-        for (auto& s : out) if (s == resolved) return;
-        out.push_back(resolved);
+        return (p.size() > 4 && p.compare(p.size() - 4, 4, ".jpg") == 0)
+            || (p.size() > 5 && p.compare(p.size() - 5, 5, ".jpeg") == 0)
+            || (p.size() > 4 && p.compare(p.size() - 4, 4, ".png") == 0);
     };
-    size_t i = 0;
-    while (i < html.size()) {
-        size_t s = html.find("src=", i);
-        size_t u2 = html.find("url(", i);
-        size_t ss = (s == std::string::npos) ? html.size() : s;
-        size_t uu = (u2 == std::string::npos) ? html.size() : u2;
-        if (ss >= html.size() && uu >= html.size()) break;
-        if (uu < ss) {
-            size_t open = u2 + 4;
-            while (open < html.size() && (html[open]==' '||html[open]=='\t'||html[open]=='"'||html[open]=='\'')) open++;
-            size_t close = html.find_first_of(")\"'", open);
-            if (close != std::string::npos) { addUrl(html.substr(open, close - open)); i = close + 1; }
-            else break;
-        } else {
-            size_t open = ss + 4;
-            while (open < html.size() && html[open]==' ') open++;
-            char quote = 0;
-            if (open < html.size() && (html[open]=='"'||html[open]=='\'')) { quote = html[open]; open++; }
-            size_t end;
-            if (quote) { end = html.find(quote, open); if (end == std::string::npos) end = html.size() - 1; }
-            else { end = open; while (end < html.size() && html[end]!=' '&&html[end]!='>'&&html[end]!='\t'&&html[end]!='\n') end++; }
-            addUrl(html.substr(open, end - open));
-            i = (quote ? end + 1 : end);
-            if (i == 0) i = 1;
-        }
+    for (auto& b : page_.blocks) {
+        if (b.kind != BlockKind::Image) continue;
+        std::string low = b.href;
+        for (auto& c : low) c = (char)tolower((unsigned char)c);
+        if (low.rfind("data:", 0) == 0 || low.rfind("javascript:", 0) == 0) continue;
+        if (!extOk(b.href)) continue;
+        std::string resolved = b.href;
+        { net::Url base; if (net::parseUrl(baseUrl, base)) resolved = net::resolve(base, b.href); }
+        bool dup = false; for (auto& s : out) if (s == resolved) { dup = true; break; }
+        if (!dup) out.push_back(resolved);
     }
     return out;
 }
 
 void Browser::renderImageLine(int i, int& y) {
     const Line& l = lines_[i];
-    int w = gfx_->width() - 12;
+    int W = gfx_->width();
     if (img::ready(l.href)) {
         std::vector<uint16_t> px; int iw = 0, ih = 0;
         if (img::loadBmp(l.href, px, iw, ih) && iw > 0 && ih > 0) {
-            gfx_->draw16bitRGBBitmap((gfx_->width() - iw) / 2, y, px.data(), iw, ih);
+            gfx_->draw16bitRGBBitmap((W - iw) / 2, y, px.data(), iw, ih);
             y += ih + 4;
             return;
         }
     }
-    int ph = 44;
-    gfx_->drawRect(6, y, w, ph, C_DIM);
-    font::text(gfx_, 10, y + 6, font::fit(l.text.c_str(), w - 8, 1), C_DIM, 1);
-    font::text(gfx_, 10, y + 22, img::busy() ? "downloading..." : "(unavailable)", C_DIM, 1);
+    // placeholder: reserve the declared (scaled) height so the layout is stable
+    int ph = l.phh > 0 ? l.phh : 90;
+    bool queued = std::find(pageImages_.begin(), pageImages_.end(), l.href) != pageImages_.end();
+    gfx_->fillRect(4, y, W - 8, ph, 0x1010);
+    gfx_->drawRect(4, y, W - 8, ph, C_DIM);
+    std::string cap = l.text.empty() ? "image" : l.text;
+    font::text(gfx_, 10, y + 6, font::fit(cap.c_str(), W - 16, 1), C_DIM, 1);
+    const char* st = queued ? (img::busy() ? "downloading..." : "queued...") : "not supported";
+    // place the status line centered in the placeholder
+    int sy = y + ph / 2 - 6;
+    if (sy < y + 4) sy = y + 4;
+    font::text(gfx_, 10, sy, st, C_DIM, 1);
     y += ph + 4;
 }
 
@@ -355,16 +317,28 @@ void Browser::buildLines() {
                 lines_.push_back({i, buf, false});
                 break;
             }
-        }
-    }
-    // image lines (background-downloaded, one per image, in document order)
-    if (!pageImages_.empty()) {
-        for (auto& u : pageImages_) {
-            std::string name;
-            { std::string t = u; size_t q = t.find_first_of("?#"); if (q != std::string::npos) t = t.substr(0, q); size_t sl = t.find_last_of('/'); name = (sl == std::string::npos) ? t : t.substr(sl + 1); }
-            if (name.empty()) name = "image";
-            Line il; il.block = -1; il.text = name; il.pseudo = true; il.href = u; il.img = true;
-            lines_.push_back(std::move(il));
+            case BlockKind::Image: {
+                // inline, in document order; reserve height for the (<=240x180) image.
+                // Resolve the href the SAME way as the download queue, so the cache
+                // lookup (img::ready) matches the file that actually got saved.
+                Line il;
+                il.block = i; il.img = true;
+                std::string resolved = b.href;
+                { net::Url base; if (net::parseUrl(currentUrl_, base)) resolved = net::resolve(base, b.href); }
+                il.href = resolved;
+                il.text = b.text.empty() ? "image" : b.text;
+                int phh = 90;  // default when the page doesn't declare a size
+                if (b.width > 0 && b.height > 0) {
+                    double sc = std::min(240.0 / b.width, 180.0 / b.height);
+                    if (sc > 1.0) sc = 1.0;
+                    int h = (int)(b.height * sc);
+                    if (h < 24) h = 24;
+                    phh = h;
+                }
+                il.phh = phh;
+                lines_.push_back(std::move(il));
+                break;
+            }
         }
     }
     lineCursor_ = 0;
@@ -674,7 +648,7 @@ void Browser::finishLoad(const std::string& url, std::string html, const std::st
     // the image placeholders are part of the page from the first paint.
     {
         std::string base = finalUrl.empty() ? url : finalUrl;
-        pageImages_ = collectImageUrls(html, base);
+        pageImages_ = imageUrlsFromBlocks(base);  // inline <img> sources, in document order
         lastImgStatus_ = -1;
         img::queue(pageImages_);  // no-op if the list is empty
     }
@@ -747,7 +721,7 @@ void Browser::serialCmd(const std::string& in) {
         return;
     }
     if (line == "imgtest") {
-        auto found = collectImageUrls(lastHtml_, currentUrl_.empty() ? lastHtml_ : currentUrl_);
+        auto found = imageUrlsFromBlocks(currentUrl_.empty() ? "" : currentUrl_);
         Serial.printf("[cmd] imgtest: base=%s found=%d\n", currentUrl_.c_str(), (int)found.size());
         for (size_t i = 0; i < found.size() && i < 10; i++) Serial.printf("[cmd]   %s\n", found[i].c_str());
         return;
@@ -1399,10 +1373,6 @@ void Browser::renderPage() {
         uint8_t scale = lineScale(i);
         const Line& l = lines_[i];
         if (l.img) {
-            if (i == 0 || !lines_[i - 1].img) {  // section label before the first image
-                font::text(gfx_, 6, y, (std::string("Images  ") + img::statusText()).c_str(), C_DIM, 1);
-                y += 14;
-            }
             renderImageLine(i, y);
             vis++;
             continue;

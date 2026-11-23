@@ -18,6 +18,7 @@ struct Line {
     bool btn = false;    // button: draw button box
     std::string href;    // table row: link target (A opens it); image line: image URL
     bool img = false;    // image line: href holds the image URL, blit its cached BMP
+    int phh = 0;         // image line: reserved placeholder height (scaled <= 240x180)
 };
 
 class Browser {
@@ -87,7 +88,7 @@ private:
     std::vector<std::string> recentList() const;
     bool clickable(int lineIdx) const;
     void buildLines();
-    static std::vector<std::string> collectImageUrls(const std::string& html, const std::string& baseUrl);
+    std::vector<std::string> imageUrlsFromBlocks(const std::string& baseUrl);
     void renderImageLine(int i, int& y);
     int lastImgStatus_ = -1;   // last img::done() we rendered (for live redraw)
     void navigate(const std::string& url, bool fromRedirect = false);

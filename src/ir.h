@@ -17,6 +17,7 @@ enum class BlockKind {
     ListItem, // list item (rendered with a small bullet)
     Table,    // table rows in `rows` (2-column key/value preferred)
     Select,   // dropdown: options in `options`, current index `selected`
+    Image,    // <img>: src in `href`, alt in `text`, optional width/height
 };
 
 struct TableRow {
@@ -41,6 +42,7 @@ struct Block {
     std::vector<std::string> options; // Select
     size_t selected = 0;           // Select: current option index
     bool checked = false;         // Checkbox: current state (user can toggle)
+    int width = 0, height = 0;    // Image: declared size (for placeholder layout)
     std::string value;            // Checkbox: value to submit when checked
     std::string id;               // Checkbox: DOM id (for <label for> matching)
     std::vector<size_t> checkIds; // Button/Input: checkbox blocks in the same form

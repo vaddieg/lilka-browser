@@ -209,6 +209,25 @@ void test_select() {
     CHECK(s.name == "sort");
 }
 
+void test_images() {
+    Page pg = parse("<p>before</p>"
+                    "<img src=\"/img/cat.jpg\" alt=\"A cat\" width=\"480\" height=\"360\">"
+                    "<p>after</p>");
+    // image is a block, in document order (between the two paragraphs)
+    CHECK(pg.blocks.size() == 3);
+    CHECK(pg.blocks[1].kind == BlockKind::Image);
+    CHECK(pg.blocks[1].href == "/img/cat.jpg");
+    CHECK(pg.blocks[1].text == "A cat");
+    CHECK(pg.blocks[1].width == 480 && pg.blocks[1].height == 360);
+
+    // entity-encoded src is decoded; no src -> no block
+    Page pg2 = parse("<img src=\"/a&amp;b.png\">");
+    CHECK(countKind(pg2, BlockKind::Image) == 1);
+    CHECK(pg2.blocks[0].href == "/a&b.png");
+    Page pg3 = parse("<img alt=\"no source\">");
+    CHECK(countKind(pg3, BlockKind::Image) == 0);
+}
+
 void test_charset() {
     using namespace lilka::charset;
     // canonicalization
@@ -302,6 +321,8 @@ static void dump(const Page& pg) {
             case BlockKind::ListItem: k = "list"; break;
             case BlockKind::Table: k = "table"; break;
             case BlockKind::Select: k = "select"; break;
+            case BlockKind::Checkbox: k = "checkbox"; break;
+            case BlockKind::Image: k = "image"; break;
         }
         printf("[%zu] %s", i, k);
         if (b.kind == BlockKind::Heading) printf(" h%d", b.level);
@@ -367,6 +388,7 @@ int main(int argc, char** argv) {
     test_tables();
     test_table_links();
     test_select();
+    test_images();
     test_lists();
     test_comments_and_malformed();
     test_theme_color();

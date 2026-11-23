@@ -51,11 +51,12 @@ or a bare `screen` / `picocom` on `/dev/cu.usbmodem101` at 115200 8N1.
 | `imgls` | List the `/browser/img` cache: `<hash>.bmp:<size>` for every cached image. |
 | `imgtest` | Re-run the image-URL collector on the last page and print what it found (debug). |
 
-> After a page loads, `<img>` sources are collected (only `.jpg`/`.jpeg`/`.png`),
-> downloaded one-by-one in a background task on core 1 (≤256 KB each, pixel cap to
-> avoid huge buffers), decoded (JpegDEC / PNGdec), down-scaled to ≤240×180, and
-> saved as 16-bit BMPs under `/browser/img/`. The page view shows a placeholder for
-> each and swaps in the image as it lands. A watchdog reboots the device if a single
+> The parser emits an `Image` block per `<img>` in document order, so a **sized
+> placeholder is placed inline** where the image appears (height = declared size scaled
+> to ≤240×180, default 90px). Only `.jpg`/`.jpeg`/`.png` (≤256 KB each, pixel-capped)
+> are downloaded, one-by-one in a background task on core 1, decoded (JpegDEC / PNGdec),
+> down-scaled to ≤240×180, and saved as 16-bit BMPs under `/browser/img/`. Each
+> placeholder swaps in the image as it lands. A watchdog reboots the device if a single
 > image wedges the worker (>50 s), so image loading never stays permanently dead.
 
 ## Text / cache debugging

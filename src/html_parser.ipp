@@ -452,6 +452,25 @@ void Parser::feed(const char* data, size_t len) {
                     openCtx(cx);
                     continue;
                 }
+                if (name == "img") {
+                    std::string src = unescapeAttr(attrValue(body, "src"));
+                    if (!src.empty()) {
+                        flushText();
+                        Block blk;
+                        blk.kind = BlockKind::Image;
+                        blk.href = src;
+                        blk.text = unescapeAttr(attrValue(body, "alt"));
+                        auto num = [](const std::string& s) {
+                            int v = 0;
+                            for (char c : s) { if (c >= '0' && c <= '9') v = v * 10 + (c - '0'); else break; }
+                            return v;
+                        };
+                        blk.width = num(attrValue(body, "width"));
+                        blk.height = num(attrValue(body, "height"));
+                        if (page_.blocks.size() < kMaxBlocks) page_.blocks.push_back(std::move(blk));
+                    }
+                    continue;
+                }
                 if (name == "input") {
                     std::string type = attrValue(body, "type");
                     for (auto& ch : type) ch = (char)tolower((unsigned char)ch);
