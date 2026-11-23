@@ -261,15 +261,21 @@ void Browser::renderImageLine(int i, int& y) {
     // placeholder: reserve the declared (scaled) height so the layout is stable
     int ph = l.phh > 0 ? l.phh : 90;
     bool queued = std::find(pageImages_.begin(), pageImages_.end(), l.href) != pageImages_.end();
+    bool isFailed = img::failed(l.href);
+    uint16_t border = isFailed ? 0xF800 : C_DIM;   // red frame for a failed image
     gfx_->fillRect(4, y, W - 8, ph, 0x1010);
-    gfx_->drawRect(4, y, W - 8, ph, C_DIM);
+    gfx_->drawRect(4, y, W - 8, ph, border);
     std::string cap = l.text.empty() ? "image" : l.text;
     font::text(gfx_, 10, y + 6, font::fit(cap.c_str(), W - 16, 1), C_DIM, 1);
-    const char* st = queued ? (img::busy() ? "downloading..." : "queued...") : "not supported";
+    const char* st;
+    if (isFailed)       st = "failed to load";
+    else if (!queued)   st = "not supported";
+    else if (img::busy()) st = "downloading...";
+    else                 st = "queued...";
     // place the status line centered in the placeholder
     int sy = y + ph / 2 - 6;
     if (sy < y + 4) sy = y + 4;
-    font::text(gfx_, 10, sy, st, C_DIM, 1);
+    font::text(gfx_, 10, sy, st, border, 1);
     y += ph + 4;
 }
 

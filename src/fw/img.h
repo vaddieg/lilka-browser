@@ -26,6 +26,7 @@ bool busy();
 const char* statusText();                              // e.g. "3/5", "done", "idle"
 
 bool        ready(const std::string& url);             // cached BMP present?
+bool        failed(const std::string& url);            // queued for this page but failed to load
 std::string cachePath(const std::string& url);         // /browser/img/<hash>.bmp
 void        listDir(std::string& out);                 // "name:size bytes; ..." of cached BMPs
 /// Load a cached 16-bit BMP into `out` (row-major RGB565, w*h). false if absent/bad.

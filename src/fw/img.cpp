@@ -15,6 +15,7 @@
 #include <PNGdec.h>
 #include <cstring>
 #include <cmath>
+#include <set>
 
 namespace img {
 
@@ -274,25 +275,28 @@ std::atomic<int> g_done{0};
 std::atomic<bool> g_busy{false};
 std::atomic<unsigned> g_gen{0};   // bumped on every clear()/queue(); stale jobs are dropped
 std::atomic<uint32_t> g_lastTick{0};  // worker heartbeat; watchdog reboots if it wedges
+std::set<std::string> g_failed;       // URLs that failed this generation (guarded by g_mu)
 bool g_started = false;
 
 std::string cachePathFor(const std::string& url) { return std::string(kDir) + "/" + hash16(url) + ".bmp"; }
 
-void processOne(const std::string& url) {
+/// Download + decode + cache one image. Returns true iff a BMP is now available
+/// (the caller records failures so the UI can mark the placeholder distinctly).
+bool processOne(const std::string& url) {
     // The worker runs off the UI flow, so it must bring the radio up itself.
     // Without a connected STA the first netconn DNS/connect from this background
     // task hits an uninitialized lwIP core mutex and asserts (cold-boot crash).
-    if (!net::ensureWifi()) { Serial.printf("[img] skip %s: no wifi\n", url.c_str()); return; }
+    if (!net::ensureWifi()) { Serial.printf("[img] skip %s: no wifi\n", url.c_str()); return false; }
     size_t maxB = urlMaxBytes(url);
     std::string data, ct, finalUrl, err;
     net::Client c;
     if (!c.fetchBinary(url, data, ct, maxB, finalUrl, err, 20000)) {
         Serial.printf("[img] skip %s: %s\n", url.c_str(), err.c_str());
-        return;
+        return false;
     }
     int sw = 0, sh = 0;
     uint16_t* buf = decodeAny(data, sw, sh);
-    if (!buf) { Serial.printf("[img] decode fail %s (unsupported/too big)\n", url.c_str()); return; }
+    if (!buf) { Serial.printf("[img] decode fail %s (unsupported/too big)\n", url.c_str()); return false; }
 
     std::string path = cachePathFor(url);
     // esp_new_jpeg already returns a target-size buffer; only downscale if still too big
@@ -301,19 +305,27 @@ void processOne(const std::string& url) {
         bool ok = writeBmp16(path, buf, sw, sh);
         Serial.printf("[img] %s %s -> %dx%d BMP\n", ok ? "ok" : "FAIL", url.c_str(), sw, sh);
         heap_caps_free(buf);
-        return;
+        return ok;
     }
     double scale = std::min((double)kOutW / sw, (double)kOutH / sh);
     if (scale > 1.0) scale = 1.0;
     int tw = (int)(sw * scale), th = (int)(sh * scale);
     if (tw < 1) tw = 1; if (th < 1) th = 1;
     uint16_t* small = (uint16_t*)heap_caps_malloc((size_t)tw * th * 2, MALLOC_CAP_SPIRAM);
-    if (!small) { heap_caps_free(buf); return; }
+    if (!small) { Serial.printf("[img] alloc fail %s\n", url.c_str()); heap_caps_free(buf); return false; }
     downscale(buf, sw, sh, small, tw, th);
     heap_caps_free(buf);
     bool ok = writeBmp16(path, small, tw, th);
     Serial.printf("[img] %s %s -> %dx%d BMP\n", ok ? "ok" : "FAIL", url.c_str(), tw, th);
     heap_caps_free(small);
+    return ok;
+}
+
+void markFailed(const std::string& url) {
+    if (!g_mu) return;
+    xSemaphoreTake(g_mu, portMAX_DELAY);
+    g_failed.insert(url);
+    xSemaphoreGive(g_mu);
 }
 
 void worker(void* arg) {
@@ -333,7 +345,8 @@ void worker(void* arg) {
             if (job.gen != g_gen.load()) continue;   // stale (a newer page superseded it)
             Serial.printf("[img] -> %s\n", job.url.c_str());
             g_lastTick = millis();
-            processOne(job.url);
+            bool ok = processOne(job.url);
+            if (!ok) markFailed(job.url);
             g_done++;
             vTaskDelay(pdMS_TO_TICKS(120));  // be gentle to servers (avoid 429s)
             g_lastTick = millis();
@@ -373,6 +386,7 @@ void queue(const std::vector<std::string>& urls) {
     unsigned gen = g_gen.fetch_add(1) + 1;  // invalidate any prior generation
     if (g_mu) xSemaphoreTake(g_mu, portMAX_DELAY);
     g_jobs.clear();
+    g_failed.clear();  // fresh page: drop stale failure markers
     std::vector<std::string> seen;
     for (const auto& u : urls) {
         bool dup = false;
@@ -412,6 +426,15 @@ const char* statusText() {
 std::string cachePath(const std::string& url) { return cachePathFor(url); }
 
 bool ready(const std::string& url) { return SD.exists(cachePathFor(url).c_str()); }
+
+/// True if this URL was queued for this page but failed to download/decode.
+bool failed(const std::string& url) {
+    if (!g_mu) return false;
+    xSemaphoreTake(g_mu, portMAX_DELAY);
+    bool f = g_failed.count(url) > 0;
+    xSemaphoreGive(g_mu);
+    return f;
+}
 
 void listDir(std::string& out) {
     fs::File d = SD.open(kDir);

@@ -72,13 +72,18 @@ bool parseUrl(const std::string& in, Url& out) {
 std::string resolve(const Url& base, const std::string& ref) {
     if (ref.rfind("http://", 0) == 0 || ref.rfind("https://", 0) == 0) return ref;
     if (ref.empty() || ref[0] == '#') return base.toString();
-    if (ref[0] == '?') return base.scheme + "://" + base.host + base.path + ref;
+    // host plus an explicit port when it's non-default (base.host alone would
+    // drop the port and break relative links on non-default-port sites).
+    std::string hp = base.host;
+    if (base.port && ((base.scheme == "https" && base.port != 443) || (base.scheme == "http" && base.port != 80)))
+        hp += ":" + std::to_string(base.port);
+    if (ref[0] == '?') return base.scheme + "://" + hp + base.path + ref;
     if (ref[0] == '/' && ref[1] == '/') {
         std::string r = ref.substr(2);
         if (r.rfind("http", 0) == 0) return r;  // full absolute in Location
         return base.scheme + "://" + r;
     }
-    if (ref[0] == '/') return base.scheme + "://" + base.host + ref;
+    if (ref[0] == '/') return base.scheme + "://" + hp + ref;
     size_t slash = base.path.find_last_of('/');
     std::string dir = (slash == std::string::npos) ? "/" : base.path.substr(0, slash + 1);
     std::string out = dir + ref;
@@ -89,7 +94,7 @@ std::string resolve(const Url& base, const std::string& ref) {
     }
     // Relative refs must keep the host — dropping it made the worker reject
     // root/site-relative <img src> (e.g. "./static/x.jpg") as "bad url".
-    return base.scheme + "://" + base.host + out;
+    return base.scheme + "://" + hp + out;
 }
 
 std::string rewriteUrl(const std::string& in) {
