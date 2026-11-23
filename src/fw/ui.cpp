@@ -1386,7 +1386,7 @@ void Browser::renderBusy() {
             snprintf(t, sizeof t, "%lus", (unsigned long)((millis() - busyT0_) / 1000));
             font::text(gfx_, 10, by + 38, t, C_DIM, 1);
         }
-        font::text(gfx_, 4, gfx_->height() - kFooterH + 1, "B=cancel", C_DIM, 1);
+        font::text(gfx_, 4, gfx_->height() - kFooterH + 1, "please wait...", C_DIM, 1);
         return;
     }
 
