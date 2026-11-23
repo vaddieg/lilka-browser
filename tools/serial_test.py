@@ -21,7 +21,7 @@ def main():
         s.reset_input_buffer()
         print(f"\n>> {c}")
         s.write((c + "\n").encode())
-        deadline = time.time() + (40 if c.startswith("dump") else 12)
+        deadline = time.time() + (40 if c.startswith("dump") else (185 if c.startswith("dl ") else 12))
         buf = b""
         while time.time() < deadline:
             if s.in_waiting:
