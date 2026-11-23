@@ -307,17 +307,25 @@ void processOne(const std::string& url) {
 void worker(void* arg) {
     for (;;) {
         g_lastTick = millis();
-        xSemaphoreTake(g_sem, portMAX_DELAY);
+        // Wake on a nudge OR a short bounded poll. We deliberately do NOT use one
+        // signal-per-job (a lost/drifted count made the worker wait forever on the
+        // last image). Instead: wait briefly, then drain EVERY pending job.
+        if (g_sem) xSemaphoreTake(g_sem, pdMS_TO_TICKS(200));
         g_lastTick = millis();
-        if (g_mu) xSemaphoreTake(g_mu, portMAX_DELAY);
-        Job job; bool has = false;
-        if (!g_jobs.empty()) { job = std::move(g_jobs.front()); g_jobs.erase(g_jobs.begin()); has = true; }
-        if (g_mu) xSemaphoreGive(g_mu);
-        if (!has) continue;
-        if (job.gen != g_gen.load()) continue;   // stale (a newer page superseded it)
-        processOne(job.url);
-        g_done++;
-        vTaskDelay(pdMS_TO_TICKS(120));  // be gentle to servers (avoid 429s)
+        for (;;) {
+            Job job; bool has = false;
+            if (g_mu) xSemaphoreTake(g_mu, portMAX_DELAY);
+            if (!g_jobs.empty()) { job = std::move(g_jobs.front()); g_jobs.erase(g_jobs.begin()); has = true; }
+            if (g_mu) xSemaphoreGive(g_mu);
+            if (!has) break;
+            if (job.gen != g_gen.load()) continue;   // stale (a newer page superseded it)
+            Serial.printf("[img] -> %s\n", job.url.c_str());
+            g_lastTick = millis();
+            processOne(job.url);
+            g_done++;
+            vTaskDelay(pdMS_TO_TICKS(120));  // be gentle to servers (avoid 429s)
+            g_lastTick = millis();
+        }
     }
 }
 

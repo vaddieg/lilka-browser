@@ -7,6 +7,7 @@
 #include <semphr.h>
 #include <atomic>
 #include <cstring>
+#include <map>
 
 namespace net {
 
@@ -354,6 +355,23 @@ std::string g_acceptLang = "en";  // explicit user preference, not an assumption
 void setAcceptLanguage(const std::string& v) { g_acceptLang = v.empty() ? "en" : v; }
 static void stage(const char* s) { if (g_stageFn) g_stageFn(s); }
 
+// Per-host IP cache. A netconn DNS lookup (WiFi.hostByName) from a background
+// task can block for tens of seconds with no user-settable timeout — and the
+// image worker re-resolves the same host for every <img>. Caching the resolved
+// IP means we only do one DNS lookup per host, so a slow/hung resolution on one
+// request doesn't keep happening on the next.
+static std::map<std::string, std::pair<IPAddress, uint32_t>> g_ipCache;
+static const uint32_t kIpTTL = 300000;  // 5 min — plenty for a browsing session
+static bool resolveHost(const std::string& host, IPAddress& ip) {
+    auto it = g_ipCache.find(host);
+    if (it != g_ipCache.end() && (millis() - it->second.second < kIpTTL)) {
+        ip = it->second.first;
+        return true;
+    }
+    if (WiFi.hostByName(host.c_str(), ip)) { g_ipCache[host] = {ip, millis()}; return true; }
+    return false;
+}
+
 bool Client::open(const Url& u, int timeoutMs, WiFiClientSecure& client, std::string& err) {
     client.setInsecure();  // no CA store on-device; MITM risk accepted for v1
     client.setTimeout(timeoutMs);
@@ -362,7 +380,7 @@ bool Client::open(const Url& u, int timeoutMs, WiFiClientSecure& client, std::st
     for (int attempt = 1; attempt <= 2; attempt++) {
         stage("dns");
         IPAddress ip;
-        if (!WiFi.hostByName(u.host.c_str(), ip)) {
+        if (!resolveHost(u.host, ip)) {
             err = "dns " + u.host + " failed";
             delay(300);
             continue;
