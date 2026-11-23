@@ -88,12 +88,44 @@ public:
 
 private:
     bool open(const Url& u, int timeoutMs, WiFiClientSecure& client, std::string& err);
+
+    // ---- shared request plumbing (used by get/post AND the streaming download) ----
+    struct Headers {
+        int status = 0;
+        bool chunked = false;
+        long contentLength = -1;
+        std::string encoding;      // Content-Encoding (gzip/zlib) if any
+        std::string contentType;   // raw Content-Type
+        std::string location;      // redirect target if 3xx
+    };
+    /// Open the connection, send the request, read status + headers. The client
+    /// is left OPEN for the caller to read the body.
+    bool sendRequest(const Url& u, WiFiClientSecure& client, Headers& h, std::string& err,
+                     int timeoutMs, const std::string& userAgent,
+                     const std::string& method = "GET", const std::string& postBody = "",
+                     const std::string& ifNoneMatch = "", const std::string& ifModifiedSince = "");
+    /// Read a response body into `out`, honoring chunked / content-length; decompresses gzip.
+    bool readBody(WiFiClientSecure& client, const Headers& h, std::string& out, std::string& err, int timeoutMs);
+
     /// One request: fills body (decoded), location header, status code; handles gzip.
     /// `method` is "GET" or "POST"; `postBody` sent as-is for POST.
     bool request(const Url& u, std::string& body, std::string& location,
                  std::string& err, int timeoutMs, const std::string& userAgent, int& status,
                  const std::string& method = "GET", const std::string& postBody = "",
                  const std::string& ifNoneMatch = "", const std::string& ifModifiedSince = "");
+
+public:
+    /// Stream a binary file straight to SD (no PSRAM buffering of the body).
+    /// Follows redirects. Returns the final byte count, or:
+    ///   -1  on error (see `err`)
+    ///   -2  the response was text (HTML/plain) — nothing written; caller should
+    ///       render it as a page instead (outContentType tells you which).
+    /// `sdPath` is the destination file (created/overwritten only for real files).
+    long download(const std::string& url, const std::string& sdPath,
+                  std::string& err, std::string& finalUrl, std::string& outContentType,
+                  int timeoutMs = 180000, int maxRedirects = 5,
+                  const std::string& userAgent =
+                      "Lilka/1.0 (ESP32-S3; browser; +https://github.com/lilka-dev/lilka)");
 };
 
 /// Progress/stage reporting: called with "dns", "tcp", "tls", "send",

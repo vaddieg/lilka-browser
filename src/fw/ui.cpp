@@ -1408,7 +1408,7 @@ void Browser::renderDone() {
 
 void Browser::renderDownloads() {
     gfx_->fillScreen(0x0000);
-    gfx_->fillRect(0, 0, gfx_->width(), kHeaderH, 0x404080);
+    gfx_->fillRect(0, 0, gfx_->width(), kHeaderH, C_ACCENT);
     font::text(gfx_, 6, 3, "Downloads", 0xFFFF, 1);
     auto list = store::downloads(10);
     if (list.empty()) {
@@ -1430,7 +1430,7 @@ void Browser::renderDownloads() {
             std::string label = font::fit(e.name.c_str(), gfx_->width() - 56, 1);
             label += "  ";
             label += sz;
-            uint16_t bg = (i == dlSel_) ? 0x404080 : 0x0000;
+            uint16_t bg = (i == dlSel_) ? C_ACCENT : 0x0000;
             uint16_t fg = (i == dlSel_) ? 0xFFFF : 0xDDDD;
             if (bg) gfx_->fillRect(0, y, gfx_->width(), lineH(), bg);
             font::text(gfx_, 6, y, label.c_str(), fg, 1);
@@ -1480,27 +1480,44 @@ void Browser::downloadFile(const std::string& urlIn) {
     renderBusy();
     gfx_->flush();
 
-    std::string err, data, finalUrl;
+    std::string err, finalUrl, ct;
     bool got = false;
+    long sz = -1;
     std::string ssid, pass;
+
+    // filename from the URL's last path segment (used as the SD destination).
+    std::string name;
+    {
+        std::string u = url;
+        size_t q = u.find_first_of("?#");
+        if (q != std::string::npos) u = u.substr(0, q);
+        size_t slash = u.find_last_of('/');
+        name = (slash == std::string::npos) ? u : u.substr(slash + 1);
+    }
+    if (name.empty() || name.find('.') == std::string::npos) name += ".bin";
+    if (!SD.exists("/browser/downloads")) SD.mkdir("/browser/downloads");
+    std::string sdPath = std::string("/browser/downloads/") + name;
+
     if (!net::wifiCreds(ssid, pass)) err = "no wifi creds (set up in Keira)";
     else if (WiFi.status() != WL_CONNECTED && !net::connect(ssid, pass, 20000)) err = "wifi connect failed";
     else {
         net::Client c;
-        if (c.get(url, data, finalUrl, err, 180000)) {   // 3 min for large files
-            std::string ct = net::lastContentType();
-            for (auto& ch : ct) ch = (char)tolower((unsigned char)ch);
-            Serial.printf("[dl] got %u bytes ct=%s\n", (unsigned)data.size(), ct.c_str());
-            // A .bin URL can still serve HTML (e.g. a GitHub /blob/ page). If the
-            // server actually sent text, it's a page — render it, don't save the
-            // HTML as a binary file.
-            if (ct.empty() || ct.rfind("text/", 0) == 0) {
-                Serial.printf("[dl] response is text (%s) -> render as page\n", ct.c_str());
-                finishLoad(url, std::move(data), finalUrl);
-                return;
+        sz = c.download(url, sdPath, err, finalUrl, ct, 180000);  // 3 min for large files
+        Serial.printf("[dl] download rc=%ld ct=%s\n", sz, ct.c_str());
+        if (sz == -2) {
+            // Server actually served text (HTML/plain) — render it as a page.
+            Serial.printf("[dl] response is text (%s) -> render as page\n", ct.c_str());
+            std::string html, pageErr;
+            if (c.get(url, html, finalUrl, pageErr, 30000)) {
+                finishLoad(url, std::move(html), finalUrl);
+            } else {
+                errText_ = pageErr.empty() ? "render failed" : pageErr;
+                mode_ = ERROR;
+                dirty_ = true;
             }
-            got = true;
+            return;
         }
+        if (sz >= 0) got = true;
     }
 
     if (!got) {
@@ -1510,30 +1527,11 @@ void Browser::downloadFile(const std::string& urlIn) {
         return;
     }
 
-    // filename from the final URL's last path segment
-    std::string name;
-    {
-        std::string u = finalUrl.empty() ? url : finalUrl;
-        size_t q = u.find_first_of("?#");
-        if (q != std::string::npos) u = u.substr(0, q);
-        size_t slash = u.find_last_of('/');
-        name = (slash == std::string::npos) ? u : u.substr(slash + 1);
-    }
-    if (name.empty() || name.find('.') == std::string::npos) name += ".bin";
-
-    if (!store::saveDownload(name, data)) {
-        errText_ = "save failed (SD card?)";
-        mode_ = ERROR;
-        dirty_ = true;
-        return;
-    }
-
-    char sz[32];
-    snprintf(sz, sizeof sz, data.size() >= 1048576 ? "%u.%uMB" : "%uKB",
-             (unsigned)(data.size() / (data.size() >= 1048576 ? 1048576 : 1024)),
-             data.size() >= 1048576 ? (unsigned)((data.size() / 102400) % 10) : 0u);
-    doneText_ = std::string(name) + " (" + sz + ")\n" + "/browser/downloads/" + name;
-    Serial.printf("[dl] saved %s (%u bytes)\n", name.c_str(), (unsigned)data.size());
+    char human[24];
+    if (sz >= 1048576) snprintf(human, sizeof human, "%.1fMB", (double)sz / 1048576.0);
+    else snprintf(human, sizeof human, "%uKB", (unsigned)(sz / 1024));
+    doneText_ = std::string(name) + " (" + human + ")\n" + sdPath;
+    Serial.printf("[dl] saved %s (%ld bytes)\n", name.c_str(), sz);
     mode_ = DONE;
     dirty_ = true;
 }

@@ -428,13 +428,10 @@ bool inflateBody(const std::string& raw, const std::string& encoding, std::strin
     return true;
 }
 
-bool Client::request(const Url& u, std::string& body, std::string& location,
-                     std::string& err, int timeoutMs, const std::string& userAgent,
-                     int& status, const std::string& method, const std::string& postBody,
-                     const std::string& ifNoneMatch, const std::string& ifModifiedSince) {
-    WiFiClientSecure client;
-    if (!open(u, timeoutMs, client, err)) return false;
-
+bool Client::sendRequest(const Url& u, WiFiClientSecure& client, Headers& h, std::string& err,
+                         int timeoutMs, const std::string& userAgent, const std::string& method,
+                         const std::string& postBody, const std::string& ifNoneMatch,
+                         const std::string& ifModifiedSince) {
     std::string cookieHdr = getCookieHeader(u.host);
     std::string req = method + " " + u.path + " HTTP/1.1\r\n"
                       "Host: " + u.host + "\r\n"
@@ -450,33 +447,19 @@ bool Client::request(const Url& u, std::string& body, std::string& location,
         req += "Content-Length: " + std::to_string(postBody.size()) + "\r\n";
     }
     req += "Connection: close\r\n\r\n";
-    if (!cookieHdr.empty()) {
-        Serial.printf("[net] send cookie (%u chars)\n", (unsigned)cookieHdr.size());
-    }
+    if (!cookieHdr.empty()) Serial.printf("[net] send cookie (%u chars)\n", (unsigned)cookieHdr.size());
     stage("send");
     client.print(req.c_str());
     if (method == "POST" && !postBody.empty()) client.print(postBody.c_str());
 
     std::string line;
     if (!readLine(client, line) || line.empty()) { err = "no response"; return false; }
-    // line = "HTTP/1.1 200 OK" — status is the second token
     size_t sp = line.find(' ');
-    status = (sp == std::string::npos) ? 0 : (int)strtol(line.c_str() + sp + 1, nullptr, 10);
-    Serial.printf("[net] status %d (%s)\n", status, line.c_str());
-    if (status < 100 || status > 599) { err = "bad status"; return false; }
+    h.status = (sp == std::string::npos) ? 0 : (int)strtol(line.c_str() + sp + 1, nullptr, 10);
+    Serial.printf("[net] status %d (%s)\n", h.status, line.c_str());
+    if (h.status < 100 || h.status > 599) { err = "bad status"; return false; }
+    g_notModified = (h.status == 304);
 
-    bool chunked = false;
-    long contentLength = -1;
-    std::string encoding;
-    std::string contentType;
-    g_notModified = (status == 304);
-    if (status == 304) {
-        // Not Modified: no body expected; stop reading and report success.
-        client.stop();
-        body.clear();
-        Serial.printf("[net] 304 Not Modified (reuse cache)\n");
-        return true;
-    }
     for (;;) {
         if (!readLine(client, line)) break;
         if (line.empty()) break;
@@ -486,79 +469,72 @@ bool Client::request(const Url& u, std::string& body, std::string& location,
         for (auto& ch : k) ch = (char)tolower((unsigned char)ch);
         size_t vs = v.find_first_not_of(" \t");
         if (vs != std::string::npos) v = v.substr(vs);
-        if (k == "set-cookie") {
-            parseSetCookie(u.host, v);
-        }
+        if (k == "set-cookie") parseSetCookie(u.host, v);
         else if (k == "location") {
-            // Some servers (yes, Google) emit invalid chars in Location;
-            // strip anything that can't be in a URL.
             std::string clean;
             for (char ch : v)
                 if (ch != '<' && ch != '>' && ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') clean += ch;
-            location = clean;
+            h.location = clean;
         }
-        else if (k == "content-length") contentLength = atol(v.c_str());
-        else if (k == "transfer-encoding") { if (v.find("chunked") != std::string::npos) chunked = true; }
-        else if (k == "content-encoding") encoding = v;
-        else if (k == "content-type") contentType = v;
+        else if (k == "content-length") h.contentLength = atol(v.c_str());
+        else if (k == "transfer-encoding") { if (v.find("chunked") != std::string::npos) h.chunked = true; }
+        else if (k == "content-encoding") h.encoding = v;
+        else if (k == "content-type") h.contentType = v;
         else if (k == "etag") g_etag = v;
         else if (k == "last-modified") g_lastModified = v;
     }
+    return true;
+}
 
-    std::string raw;
+bool Client::readBody(WiFiClientSecure& client, const Headers& h, std::string& out, std::string& err, int timeoutMs) {
     size_t lastReported = 0;
     uint32_t bodyT0 = millis();
     uint32_t lastData = bodyT0;
-    if (chunked) {
+    if (h.chunked) {
         std::string sizeLine;
         int nChunks = 0;
-        long lastSz = -1;
         long sumSizes = 0;
         for (;;) {
-            if (millis() - bodyT0 > (uint32_t)timeoutMs) { Serial.printf("[net] chunked: overall timeout\n"); break; }
-            if (millis() - lastData > 10000) { Serial.printf("[net] chunked: stall timeout\n"); break; }
-            if (!readLine(client, sizeLine)) { Serial.printf("[net] chunk: size line read FAIL\n"); break; }
+            if (millis() - bodyT0 > (uint32_t)timeoutMs) { err = "chunked timeout"; break; }
+            if (millis() - lastData > 10000) { err = "chunked stall"; break; }
+            if (!readLine(client, sizeLine)) { err = "chunk size read fail"; break; }
             long sz = strtol(sizeLine.c_str(), nullptr, 16);
-            lastSz = sz;
             if (sz <= 0) break;
             sumSizes += sz;
             nChunks++;
-            // NOTE: read into a temp buffer and append only on success.
-            // Pre-resizing `raw` and then failing to read leaves null padding
-            // in the middle of the body (this corrupted the gzip stream).
             uint8_t rbuf[4096];
             while (sz > 0 && (client.available() || client.connected())) {
-                if (millis() - lastData > 10000) { Serial.printf("[net] chunk: data stall\n"); break; }
+                if (millis() - lastData > 10000) { err = "chunk data stall"; break; }
                 int want = (int)(sz < 4096 ? sz : 4096);
                 int n = client.read(rbuf, (size_t)want);
                 if (n <= 0) { delay(2); continue; }
-                raw.append((const char*)rbuf, (size_t)n);
+                out.append((const char*)rbuf, (size_t)n);
                 lastData = millis();
                 sz -= n;
-                if (raw.size() - lastReported >= 8192) {
-                    lastReported = raw.size();
-                    stage(("body " + std::to_string(raw.size() / 1024) + "KB").c_str());
+                if (out.size() - lastReported >= 8192) {
+                    lastReported = out.size();
+                    stage(("body " + std::to_string(out.size() / 1024) + "KB").c_str());
                 }
             }
-            if (sz > 0) { Serial.printf("[net] chunk: left %ld (gave up)\n", sz); break; }
-            if (!readLine(client, sizeLine)) { Serial.printf("[net] chunk %d: CRLF read FAIL\n", nChunks); break; }
+            if (!err.empty() || sz > 0) { if (sz > 0) err = err.empty() ? "chunk short" : err; break; }
+            if (!readLine(client, sizeLine)) { err = "chunk CRLF fail"; break; }
         }
-        Serial.printf("[net] chunked: %d chunks, raw=%u %s\n", nChunks, (unsigned)raw.size(), (long)raw.size() == sumSizes ? "FRAMING-OK" : "FRAMING-MISMATCH");
+        Serial.printf("[net] chunked: %d chunks, raw=%u %s\n", nChunks, (unsigned)out.size(), (long)out.size() == sumSizes ? "FRAMING-OK" : "FRAMING-MISMATCH");
     } else {
-        if (contentLength > 0) raw.reserve((size_t)contentLength);
+        if (h.contentLength > 0) out.reserve((size_t)h.contentLength);
         uint8_t buf[2048];
         for (;;) {
-            if (contentLength > 0 && (long)raw.size() >= contentLength) break;
-            if (millis() - bodyT0 > (uint32_t)timeoutMs) break;
-            if (millis() - lastData > 10000) { Serial.printf("[net] body: stall timeout\n"); break; }
+            if (h.contentLength > 0 && (long)out.size() >= h.contentLength) break;
+            if (millis() - bodyT0 > (uint32_t)timeoutMs) { err = "body timeout"; break; }
+            if (millis() - lastData > 10000) { err = "body stall"; break; }
             if (client.available()) {
                 int n = client.read(buf, sizeof(buf));
                 if (n > 0) {
-                    raw.append((char*)buf, n);
+                    out.append((char*)buf, n);
                     lastData = millis();
-                    if (raw.size() - lastReported >= 8192) {
-                        lastReported = raw.size();
-                        stage(("body " + std::to_string(raw.size() / 1024) + "KB").c_str());
+                    if (out.size() - lastReported >= 8192) {
+                        lastReported = out.size();
+                        stage(("body " + std::to_string(out.size() / 1024) + "KB").c_str());
                     }
                     continue;
                 }
@@ -567,13 +543,41 @@ bool Client::request(const Url& u, std::string& body, std::string& location,
             delay(2);
         }
     }
+    return err.empty();
+}
+
+bool Client::request(const Url& u, std::string& body, std::string& location,
+                     std::string& err, int timeoutMs, const std::string& userAgent,
+                     int& status, const std::string& method, const std::string& postBody,
+                     const std::string& ifNoneMatch, const std::string& ifModifiedSince) {
+    WiFiClientSecure client;
+    if (!open(u, timeoutMs, client, err)) return false;
+
+    Headers h;
+    if (!sendRequest(u, client, h, err, timeoutMs, userAgent, method, postBody, ifNoneMatch, ifModifiedSince)) {
+        client.stop();
+        return false;
+    }
+    status = h.status;
+    location = h.location;
+
+    if (h.status == 304) {
+        g_notModified = true;
+        client.stop();
+        body.clear();
+        Serial.printf("[net] 304 Not Modified (reuse cache)\n");
+        return true;
+    }
+
+    std::string raw;
+    if (!readBody(client, h, raw, err, timeoutMs)) { client.stop(); return false; }
     client.stop();
-    Serial.printf("[net] body raw=%u enc=%s ctype=%s\n", (unsigned)raw.size(), encoding.c_str(), contentType.c_str());
+    Serial.printf("[net] body raw=%u enc=%s ctype=%s\n", (unsigned)raw.size(), h.encoding.c_str(), h.contentType.c_str());
 
     // remember the declared charset so the caller can transcode legacy encodings
     g_charset.clear();
     {
-        std::string ct = contentType;
+        std::string ct = h.contentType;
         for (auto& ch : ct) ch = (char)tolower((unsigned char)ch);
         size_t semi = ct.find(';');
         if (semi != std::string::npos) ct = ct.substr(0, semi);
@@ -593,7 +597,7 @@ bool Client::request(const Url& u, std::string& body, std::string& location,
     }
 
     stage("inflate");
-    bool ok = inflateBody(raw, encoding, body, err);
+    bool ok = inflateBody(raw, h.encoding, body, err);
     g_lastRaw = std::move(raw);  // keep raw for debug commands (saveraw/reinflate)
     if (!ok) {
         body = body.empty() ? std::move(g_lastRaw) : body;
@@ -678,6 +682,157 @@ bool Client::get(const std::string& url, std::string& outBody, std::string& outF
     }
     err = "too many redirects";
     return false;
+}
+
+long Client::download(const std::string& url, const std::string& sdPath,
+                      std::string& err, std::string& finalUrl, std::string& outContentType,
+                      int timeoutMs, int maxRedirects, const std::string& userAgent) {
+    std::string cur = rewriteUrl(url);
+    for (int i = 0; i <= maxRedirects; i++) {
+        Url u;
+        if (!parseUrl(cur, u)) { err = "bad url: " + url; return -1; }
+
+        WiFiClientSecure client;
+        if (!open(u, timeoutMs, client, err)) return -1;
+
+        // Downloads want the exact bytes: request identity encoding so a binary
+        // isn't gzipped on us (we stream to SD, no room to inflate a big file).
+        Headers h;
+        {
+            std::string cookieHdr = getCookieHeader(u.host);
+            std::string req = "GET " + u.path + " HTTP/1.1\r\n"
+                              "Host: " + u.host + "\r\n"
+                              "User-Agent: " + userAgent + "\r\n"
+                              "Accept: */*\r\n"
+                              "Accept-Encoding: identity\r\n"
+                              "Accept-Language: " + g_acceptLang + "\r\n" +
+                              (cookieHdr.empty() ? "" : ("Cookie: " + cookieHdr + "\r\n")) +
+                              "Connection: close\r\n\r\n";
+            stage("send");
+            client.print(req.c_str());
+
+            std::string line;
+            if (!readLine(client, line) || line.empty()) { err = "no response"; client.stop(); return -1; }
+            size_t sp = line.find(' ');
+            h.status = (sp == std::string::npos) ? 0 : (int)strtol(line.c_str() + sp + 1, nullptr, 10);
+            Serial.printf("[net] dl status %d (%s)\n", h.status, line.c_str());
+            if (h.status < 100 || h.status > 599) { err = "bad status"; client.stop(); return -1; }
+            for (;;) {
+                if (!readLine(client, line)) break;
+                if (line.empty()) break;
+                size_t c = line.find(':');
+                if (c == std::string::npos) continue;
+                std::string k = line.substr(0, c), v = line.substr(c + 1);
+                for (auto& ch : k) ch = (char)tolower((unsigned char)ch);
+                size_t vs = v.find_first_not_of(" \t");
+                if (vs != std::string::npos) v = v.substr(vs);
+                if (k == "set-cookie") parseSetCookie(u.host, v);
+                else if (k == "location") {
+                    std::string clean;
+                    for (char ch : v)
+                        if (ch != '<' && ch != '>' && ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') clean += ch;
+                    h.location = clean;
+                }
+                else if (k == "content-length") h.contentLength = atol(v.c_str());
+                else if (k == "transfer-encoding") { if (v.find("chunked") != std::string::npos) h.chunked = true; }
+                else if (k == "content-encoding") h.encoding = v;
+                else if (k == "content-type") h.contentType = v;
+            }
+        }
+
+        if (h.status >= 300 && h.status < 400 && !h.location.empty()) {
+            cur = resolve(u, h.location);
+            client.stop();
+            Serial.printf("[net] dl redirect -> %s\n", cur.c_str());
+            continue;
+        }
+        if (h.status != 200) { err = "http " + std::to_string(h.status); client.stop(); return -1; }
+
+        // If it's actually text (HTML/plain), don't stream to SD — let the caller
+        // render it as a page. (GitHub /blob/ links return text/html; /raw/ returns octet-stream.)
+        {
+            std::string ct = h.contentType;
+            for (auto& ch : ct) ch = (char)tolower((unsigned char)ch);
+            outContentType = ct;
+            if (ct.rfind("text/", 0) == 0 || ct.find("application/json") != std::string::npos
+                || ct.find("xml") != std::string::npos || ct.find("svg") != std::string::npos) {
+                client.stop();
+                Serial.printf("[net] dl: response is %s — not saving as file\n", ct.c_str());
+                return -2;
+            }
+        }
+
+        // Stream the body straight to SD — never buffer the whole file in RAM.
+        fs::File f = SD.open(sdPath.c_str(), FILE_WRITE);
+        if (!f) { err = "open SD fail: " + sdPath; client.stop(); return -1; }
+
+        long total = 0;
+        long lastReported = 0;
+        uint32_t bodyT0 = millis();
+        uint32_t lastData = bodyT0;
+        bool fail = false;
+
+        uint8_t buf[4096];
+        auto writeChunk = [&](const uint8_t* p, int n) -> bool {
+            int off = 0;
+            while (off < n) {
+                int w = f.write(p + off, (size_t)(n - off));
+                if (w <= 0) return false;
+                off += w;
+            }
+            total += n;
+            lastData = millis();
+            if (total - lastReported >= 16384) {
+                lastReported = total;
+                stage(("dl " + std::to_string(total / 1024) + "KB").c_str());
+            }
+            return true;
+        };
+
+        if (h.chunked) {
+            std::string sizeLine;
+            for (;;) {
+                if (millis() - bodyT0 > (uint32_t)timeoutMs) { fail = true; err = "dl timeout"; break; }
+                if (millis() - lastData > 10000) { fail = true; err = "dl stall"; break; }
+                if (!readLine(client, sizeLine)) { fail = true; err = "chunk read fail"; break; }
+                long sz = strtol(sizeLine.c_str(), nullptr, 16);
+                if (sz <= 0) break;
+                while (sz > 0) {
+                    if (millis() - lastData > 10000) { fail = true; err = "chunk stall"; break; }
+                    if (!client.available()) { delay(2); continue; }
+                    int want = (int)(sz < (long)sizeof(buf) ? sz : (long)sizeof(buf));
+                    int n = client.read(buf, (size_t)want);
+                    if (n <= 0) continue;
+                    if (!writeChunk(buf, n)) { fail = true; err = "SD write fail"; break; }
+                    sz -= n;
+                }
+                if (fail) break;
+                if (!readLine(client, sizeLine)) { fail = true; err = "chunk CRLF fail"; break; }
+            }
+        } else {
+            long left = h.contentLength;
+            for (;;) {
+                if (left > 0 && total >= left) break;
+                if (millis() - bodyT0 > (uint32_t)timeoutMs) { fail = true; err = "dl timeout"; break; }
+                if (millis() - lastData > 10000) { fail = true; err = "dl stall"; break; }
+                if (!client.available()) { if (!client.connected()) break; delay(2); continue; }
+                int n = client.read(buf, sizeof(buf));
+                if (n > 0) {
+                    if (left > 0 && (long)n > left - total) n = (int)(left - total);
+                    if (!writeChunk(buf, n)) { fail = true; err = "SD write fail"; break; }
+                }
+            }
+        }
+
+        f.close();
+        client.stop();
+        if (fail) { SD.remove(sdPath.c_str()); Serial.printf("[net] dl FAILED %s (%ld bytes)\n", err.c_str(), total); return -1; }
+        Serial.printf("[net] dl OK %s (%ld bytes)\n", sdPath.c_str(), total);
+        finalUrl = u.toString();
+        return total;
+    }
+    err = "too many redirects";
+    return -1;
 }
 
 bool Client::getCond(const std::string& url, std::string& outBody, std::string& outFinalUrl,
