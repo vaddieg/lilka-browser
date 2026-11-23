@@ -87,7 +87,9 @@ std::string resolve(const Url& base, const std::string& ref) {
         if (d == std::string::npos) break;
         out = out.substr(0, d) + out.substr(d + 2);
     }
-    return out;
+    // Relative refs must keep the host — dropping it made the worker reject
+    // root/site-relative <img src> (e.g. "./static/x.jpg") as "bad url".
+    return base.scheme + "://" + base.host + out;
 }
 
 std::string rewriteUrl(const std::string& in) {

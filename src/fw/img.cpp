@@ -159,7 +159,9 @@ static uint16_t* decodeJpeg(const std::string& data, int& w, int& h) {
     jpeg_dec_close(dec);
     if (!ok) { Serial.printf("[img] esp jpeg: header fail\n"); return decodeJpegFallback(data, w, h); }
     int sw = info.width, sh = info.height;
-    if (sw > kMaxDim || sh > kMaxDim || (long)sw * sh > 4 * 1000 * 1000) { Serial.printf("[img] esp jpeg: too big %dx%d\n", sw, sh); return decodeJpegFallback(data, w, h); }
+    // esp_new_jpeg decodes *and* scales during the pass, so large sources are
+    // fine (it never holds a full-res buffer) — the real bound is one dimension.
+    if (sw > kMaxDim || sh > kMaxDim) { Serial.printf("[img] esp jpeg: too big %dx%d\n", sw, sh); return decodeJpegFallback(data, w, h); }
 
     // 2) pick the scale. esp_new_jpeg can shrink by at most 1/8 and requires the
     //    output dims to be multiples of 8. If the source is already small, skip scale.
@@ -168,8 +170,18 @@ static uint16_t* decodeJpeg(const std::string& data, int& w, int& h) {
     if (sw > kOutW || sh > kOutH) {
         double ratio = std::min((double)kOutW / sw, (double)kOutH / sh);
         if (ratio < 1.0 / 8.0) ratio = 1.0 / 8.0;
-        int tw = (int)(sw * ratio) / 8 * 8; if (tw < 8) tw = 8; if (tw > sw) tw = sw;
-        int th = (int)(sh * ratio) / 8 * 8; if (th < 8) th = 8; if (th > sh) th = sh;
+        // esp_new_jpeg: output must be a multiple of 8 AND >= source/8 (min scale).
+        // Round the target UP to a multiple of 8, then bump to the 1/8 minimum.
+        auto tgt = [](int src, double r) {
+            int v = (int)(src * r);
+            int minv = (src + 7) / 8;             // min allowed (1/8), rounded up
+            v = (v + 7) / 8 * 8;                    // multiple of 8
+            if (v < minv) v = (minv + 7) / 8 * 8;
+            if (v < 8) v = 8;
+            if (v > src) v = src;
+            return v;
+        };
+        int tw = tgt(sw, ratio), th = tgt(sh, ratio);
         scW = (uint16_t)tw; scH = (uint16_t)th; outW = tw; outH = th;
     }
 
