@@ -71,4 +71,5 @@ make loop
 - Wi-Fi credentials come from Keira NVS (`network` namespace, as in lilka-boombox).
 - TLS cert validation is off (`setInsecure`) — no CA store on device; document the risk.
 - Cookies are ignored in v1 (GET-only navigation).
-- UA: see `docs/UA-RESEARCH.md`; ideas for later: `docs/IDEAS.md`.
+- UA: see `docs/UA-RESEARCH.md`; ideas for later: `docs/IDEAS.md`;
+  serial debug commands: `docs/DEBUG-CLI.md`.
