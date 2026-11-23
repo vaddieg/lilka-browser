@@ -19,9 +19,26 @@ using BlockKind = lilka::BlockKind;
 namespace {
 constexpr int kHeaderH = 18;
 constexpr int kFooterH = 14;
+// The panel has rounded corners, so keep the top/bottom bars off the extreme
+// left/right edges (inset from both sides).
+constexpr int kBarInset = 25;
 const uint16_t C_ACCENT = 0x7E6E;
 const uint16_t C_LINK = 0x7CFF;      // cyan-ish for links
 const uint16_t C_DIM = 0x841C;
+
+// Inset top bar (filled), its title text, and the footer hint text — all kept
+// clear of the rounded corners by kBarInset on each side.
+void topBar(Arduino_GFX* g, uint16_t color) {
+    g->fillRect(kBarInset, 0, g->width() - 2 * kBarInset, kHeaderH, color);
+}
+void headerTitle(Arduino_GFX* g, const char* text, uint16_t color) {
+    int w = g->width() - 2 * kBarInset;
+    font::text(g, kBarInset, 3, font::fit(text, w, 1), color, 1);
+}
+void footer(Arduino_GFX* g, const char* text, uint16_t color) {
+    int w = g->width() - 2 * kBarInset;
+    font::text(g, kBarInset, g->height() - kFooterH + 1, font::fit(text, w, 1), color, 1);
+}
 
 
 void wrapWords(const std::string& text, int16_t maxW, std::vector<std::string>& out, uint8_t scale = 1) {
@@ -1334,8 +1351,8 @@ bool Browser::loop() {
 
 void Browser::renderPopup(const std::string& title, const std::vector<std::string>& items, int sel) {
     gfx_->fillScreen(0x0000);
-    gfx_->fillRect(0, 0, gfx_->width(), kHeaderH, C_ACCENT);
-    font::text(gfx_, 6, 3, title.c_str(), 0x0000, 1);
+    topBar(gfx_, C_ACCENT);
+    headerTitle(gfx_, title.c_str(), 0x0000);
     int y = kHeaderH + 6;
     for (size_t i = 0; i < items.size() && y + lineH() < gfx_->height() - kFooterH; i++, y += lineH()) {
         uint16_t c = (int)i == sel ? C_ACCENT : 0xFFFF;
@@ -1346,7 +1363,7 @@ void Browser::renderPopup(const std::string& title, const std::vector<std::strin
         font::text(gfx_, (int)i == sel ? 6 : 14, y,
                    font::fit(items[i].c_str(), gfx_->width() - 12, 1), c, 1);
     }
-    font::text(gfx_, 4, gfx_->height() - kFooterH + 1, "A=ok B=back", C_DIM, 1);
+    footer(gfx_, "A=ok B=back", C_DIM);
 }
 
 void Browser::renderPage() {
@@ -1354,8 +1371,8 @@ void Browser::renderPage() {
     // header: short url
     std::string h = currentUrl_.empty() ? "Lilka Browser" : currentUrl_;
     if (h.rfind("https://", 0) == 0) h = h.substr(8);
-    gfx_->fillRect(0, 0, gfx_->width(), kHeaderH, C_ACCENT);
-    font::text(gfx_, 6, 3, font::fit(h.c_str(), gfx_->width() - 10, 1), 0x0000, 1);
+    topBar(gfx_, C_ACCENT);
+    headerTitle(gfx_, h.c_str(), 0x0000);
 
     int y = kHeaderH + 4;
     int vis = 0;
@@ -1438,10 +1455,9 @@ void Browser::renderPage() {
         char fbuf[80];
         snprintf(fbuf, sizeof(fbuf), "find '%s' %d/%d  SEL=next B=done",
                  findTerm_.c_str(), findPos_ + 1, (int)findMatches_.size());
-        font::text(gfx_, 4, gfx_->height() - kFooterH + 1, font::fit(fbuf, gfx_->width() - 8, 1), C_LINK, 1);
+        footer(gfx_, fbuf, C_LINK);
     } else {
-        font::text(gfx_, 4, gfx_->height() - kFooterH + 1,
-                   "UD=move SEL=jump A=act B=back", C_DIM, 1);
+        footer(gfx_, "UD=move SEL=jump A=act B=back", C_DIM);
     }
 }
 
@@ -1451,9 +1467,8 @@ void Browser::renderLinkList() {
     int vis = (gfx_->height() - kHeaderH - kFooterH) / lineH();
     int top = std::max(0, linklistSel_ - vis / 2);
     gfx_->fillScreen(0x0000);
-    gfx_->fillRect(0, 0, gfx_->width(), kHeaderH, C_ACCENT);
-    font::text(gfx_, 6, 3, font::fit(("Links: " + std::to_string(n)).c_str(), gfx_->width() - 10, 1),
-               0x0000, 1);
+    topBar(gfx_, C_ACCENT);
+    headerTitle(gfx_, ("Links: " + std::to_string(n)).c_str(), 0x0000);
     int y = kHeaderH + 4;
     for (int i = 0; i < vis && top + i < n; i++, y += lineH()) {
         int idx = top + i;
@@ -1467,7 +1482,7 @@ void Browser::renderLinkList() {
                    font::fit(links_[idx].first.c_str(), gfx_->width() - 30, 1),
                    idx == linklistSel_ ? 0xFFFF : C_LINK, 1);
     }
-    font::text(gfx_, 4, gfx_->height() - kFooterH + 1, "A=open B=back", C_DIM, 1);
+    footer(gfx_, "A=open B=back", C_DIM);
 }
 
 void Browser::renderBusy() {
@@ -1505,7 +1520,7 @@ void Browser::renderBusy() {
             snprintf(t, sizeof t, "%lus", (unsigned long)((millis() - busyT0_) / 1000));
             font::text(gfx_, 10, by + 38, t, C_DIM, 1);
         }
-        font::text(gfx_, 4, gfx_->height() - kFooterH + 1, "please wait...", C_DIM, 1);
+        footer(gfx_, "please wait...", C_DIM);
         return;
     }
 
@@ -1548,8 +1563,8 @@ void Browser::onStage(const char* s) {
 
 void Browser::renderError() {
     gfx_->fillScreen(0x0000);
-    gfx_->fillRect(0, 0, gfx_->width(), kHeaderH, 0x7B00);
-    font::text(gfx_, 6, 3, "Error", 0xFFFF, 1);
+    topBar(gfx_, 0x7B00);
+    headerTitle(gfx_, "Error", 0xFFFF);
     std::vector<std::string> ws;
     wrapWords(errText_, gfx_->width() - 12, ws);
     int y = kHeaderH + 10;
@@ -1557,13 +1572,13 @@ void Browser::renderError() {
         font::text(gfx_, 8, y, font::fit(w.c_str(), gfx_->width() - 12, 1), 0xFFFF, 1);
         y += lineH();
     }
-    font::text(gfx_, 4, gfx_->height() - kFooterH + 1, "B=back C=home D=settings", C_DIM, 1);
+    footer(gfx_, "B=back C=home D=settings", C_DIM);
 }
 
 void Browser::renderDone() {
     gfx_->fillScreen(0x0000);
-    gfx_->fillRect(0, 0, gfx_->width(), kHeaderH, 0x1D6);
-    font::text(gfx_, 6, 3, "Done", 0xFFFF, 1);
+    topBar(gfx_, 0x1D6);
+    headerTitle(gfx_, "Done", 0xFFFF);
     std::vector<std::string> ws;
     wrapWords(doneText_, gfx_->width() - 12, ws);
     int y = kHeaderH + 10;
@@ -1571,13 +1586,13 @@ void Browser::renderDone() {
         font::text(gfx_, 8, y, font::fit(w.c_str(), gfx_->width() - 12, 1), 0xFFFF, 1);
         y += lineH();
     }
-    font::text(gfx_, 4, gfx_->height() - kFooterH + 1, "B=back C=home", C_DIM, 1);
+    footer(gfx_, "B=back C=home", C_DIM);
 }
 
 void Browser::renderDownloads() {
     gfx_->fillScreen(0x0000);
-    gfx_->fillRect(0, 0, gfx_->width(), kHeaderH, C_ACCENT);
-    font::text(gfx_, 6, 3, "Downloads", 0xFFFF, 1);
+    topBar(gfx_, C_ACCENT);
+    headerTitle(gfx_, "Downloads", 0xFFFF);
     auto list = store::downloads(10);
     if (list.empty()) {
         font::text(gfx_, 8, kHeaderH + 10, "(empty)", C_DIM, 1);
@@ -1607,7 +1622,7 @@ void Browser::renderDownloads() {
     }
     std::string hint = dlConfirm_ ? std::string("A=confirm delete") :
         ((int)store::downloads(1).size() ? "UD=move A=del B=back" : "B=back");
-    font::text(gfx_, 4, gfx_->height() - kFooterH + 1, hint.c_str(), C_DIM, 1);
+    footer(gfx_, hint.c_str(), C_DIM);
 }
 
 bool Browser::isFileUrl(const std::string& url) {

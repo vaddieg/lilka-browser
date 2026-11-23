@@ -192,14 +192,18 @@ void Keyboard::draw(Arduino_GFX* gfx, const std::string& title) const {
                 tmp[2] = (char)(0x80 | (k & 63)); cap = tmp;
             }
             if (cap) {
-                int16_t w = font::width(cap, 1);
+                // scale 2 (20px) — scale 1 (13px) is too small to read comfortably.
+                // Each key is ~24x57px, so 2-char caps ("ab","sp","en") still fit.
+                const uint8_t ks = 2;
+                int16_t w = font::width(cap, ks);
                 if (w > bw - 2) continue;
-                font::text(gfx, px + (bw - w) / 2, py + (bh - 13) / 2, cap, 0xFFFF, 1);
+                int16_t capH = 20;
+                font::text(gfx, px + (bw - w) / 2, py + (bh - capH) / 2, cap, 0xFFFF, ks);
             }
         }
     }
     // hint line
-    font::text(gfx, 4, H - 12, "A=type C=lang D=layer B=close", 0x7FFF7F, 1);
+    font::text(gfx, 4, H - 12, "A=type C=lang D=layer B=close", 0xAD55, 1);
 }
 
 }  // namespace kb
