@@ -22,7 +22,7 @@ constexpr int kFooterH = 14;
 // The panel has rounded corners, so keep the top/bottom bars off the extreme
 // left/right edges (inset from both sides).
 constexpr int kBarInset = 25;
-const uint16_t C_ACCENT = 0x7E6E;
+const uint16_t C_ACCENT = 0x7BEF;    // clean cyan (R15 G47 B47) — was a greenish-teal
 const uint16_t C_LINK = 0x7CFF;      // cyan-ish for links
 const uint16_t C_DIM = 0x841C;
 
@@ -1392,15 +1392,18 @@ void Browser::renderPage() {
     }
     topBar(gfx_, C_ACCENT);
     {
-        int reserve = prog.empty() ? 0 : (int)font::width(prog.c_str(), 1) + 8;
+        int reserve = prog.empty() ? 0 : (int)font::width(prog.c_str(), 1) + 16;  // chip + gap
         int w = gfx_->width() - 2 * kBarInset - reserve;
         if (w < 20) w = 20;
         font::text(gfx_, kBarInset, 3, font::fit(h.c_str(), w, 1), 0x0000, 1);
     }
     if (!prog.empty()) {
+        // A light chip behind solid-black text so it reads as a clear badge on the
+        // cyan bar (plain 13px tinted text washed out / was "barely visible").
         int tw = font::width(prog.c_str(), 1);
-        uint16_t pc = (img::done() < img::total()) ? 0x0000 : 0x364A;  // black while active, dark-green when done
-        font::text(gfx_, gfx_->width() - tw - kBarInset, 3, prog.c_str(), pc, 1);
+        int x = gfx_->width() - tw - kBarInset;
+        gfx_->fillRect(x - 4, 2, tw + 8, kHeaderH - 4, 0xFFFF);
+        font::text(gfx_, x, 3, prog.c_str(), 0x0000, 1);
     }
 
     int y = kHeaderH + 4;
@@ -1643,7 +1646,7 @@ void Browser::renderDownloads() {
             label += "  ";
             label += sz;
             uint16_t bg = (i == dlSel_) ? C_ACCENT : 0x0000;
-            uint16_t fg = (i == dlSel_) ? 0xFFFF : 0xDDDD;
+            uint16_t fg = (i == dlSel_) ? 0x0000 : 0xDDDD;  // black on the cyan highlight = readable
             if (bg) gfx_->fillRect(0, y, gfx_->width(), lineH(), bg);
             font::text(gfx_, 6, y, label.c_str(), fg, 1);
             y += lineH();
