@@ -1,4 +1,4 @@
-// Lilka browser — main.
+// Harbuz — main.
 // Dedicated firmware (Keira multiboot app): display, buttons, SD, browser UI.
 #include <Arduino.h>
 #include "fw/hw.h"

@@ -26,6 +26,7 @@ private:
         std::string formMethod;
         std::vector<std::pair<std::string, std::string>> formFields;
         std::string name;  // Select: form field name
+        std::string label; // aria-label fallback (e.g. icon-only submit buttons)
         int level = 0;
         std::string text;  // accumulated inner text
         std::vector<std::string> options; // Select

@@ -135,6 +135,28 @@ void test_inputs_forms() {
     CHECK(pg2.blocks[0].href == "/consent");
 }
 
+void test_submit_button_no_text() {
+    // DuckDuckGo's submit button has no text, only an aria-label; it must be
+    // kept (not dropped) and carry the form action.
+    Page pg = parse("<form action=\"/\" method=\"GET\">"
+                    "<textarea name=\"q\"></textarea>"
+                    "<button type=\"submit\" aria-label=\"Search\"></button></form>");
+    CHECK(countKind(pg, BlockKind::Button) == 1);
+    CHECK(pg.blocks[pg.blocks.size() - 1].text == "Search");
+    CHECK(pg.blocks[pg.blocks.size() - 1].formAction == "/");
+}
+
+void test_textarea() {
+    // DuckDuckGo's search box is a <textarea>, not an <input>.
+    Page pg = parse("<form action=\"/\" method=\"GET\">"
+                    "<textarea name=\"q\" placeholder=\"Search privately\"></textarea>"
+                    "<button type=\"submit\" aria-label=\"Search\">Search</button></form>");
+    CHECK(countKind(pg, BlockKind::Input) == 1);
+    CHECK(pg.blocks[0].name == "q");
+    CHECK(pg.blocks[0].formAction == "/");
+    CHECK(pg.blocks[0].formMethod == "GET");
+}
+
 void test_checkboxes() {
     Page pg = parse("<form action=\"/consent\">"
                     "<input type=\"checkbox\" name=\"consent\" value=\"yes\">"
@@ -384,6 +406,8 @@ int main(int argc, char** argv) {
     test_cyrillic();
     test_charset();
     test_inputs_forms();
+    test_textarea();
+    test_submit_button_no_text();
     test_checkboxes();
     test_tables();
     test_table_links();

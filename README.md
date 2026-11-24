@@ -1,10 +1,15 @@
-# Lilka browser
+# Harbuz
 
-Basic HTML browser firmware for the DIY Lilka console (ESP32-S3, ST7789 280x240).
+> *Harbuz* — Ukrainian for "pumpkin" — a basic HTML browser firmware for the DIY Lilka
+> console (ESP32-S3, ST7789 280x240). The app is themed after the name: black
+> page, pumpkin-orange accent, dark-green bottom bar.
+
 Streams a page, strips JS/CSS, renders a vertical list of links / text / inputs —
 and background-downloads the page's images (JPEG/PNG), converts them to 16-bit
 BMPs scaled to ≤240×180, and shows them inline as they arrive.
 Think Opera Mini for a 240x280 screen. See `TASK.md` for requirements.
+
+(The console itself is still called **Lilka**; only the browser app was renamed.)
 
 ## Layout
 ```

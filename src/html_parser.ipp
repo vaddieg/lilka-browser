@@ -274,6 +274,7 @@ void Parser::closeCtx() {
         if (!ctx_.options.empty())
             t = ctx_.options[ctx_.selected < ctx_.options.size() ? ctx_.selected : 0];
     }
+    if (ctx_.kind == Ctx::Button && t.empty() && !ctx_.label.empty()) t = ctx_.label;
     if (!t.empty()) {
         Block blk;
         switch (ctx_.kind) {
@@ -429,6 +430,10 @@ void Parser::feed(const char* data, size_t len) {
                     cx.href = formAction_;
                     cx.formMethod = formMethod_;
                     cx.formFields = formHidden_;
+                    // Icon-only / JS buttons (e.g. DDG's submit) have no text;
+                    // keep an aria-label so closeCtx() can retain the block.
+                    cx.label = unescapeAttr(attrValue(body, "aria-label"));
+                    if (cx.label.empty()) cx.label = unescapeAttr(attrValue(body, "value"));
                     openCtx(cx);
                     continue;
                 }
@@ -521,6 +526,22 @@ void Parser::feed(const char* data, size_t len) {
                         }
                         continue;
                     }
+                    flushText();
+                    Block blk;
+                    blk.kind = BlockKind::Input;
+                    blk.name = attrValue(body, "name");
+                    blk.placeholder = attrValue(body, "placeholder");
+                    if (blk.placeholder.empty()) blk.placeholder = blk.name;
+                    blk.formAction = formAction_;
+                    blk.formMethod = formMethod_;
+                    blk.formFields = formHidden_;
+                    blk.checkIds = formChecks_;
+                    if (page_.blocks.size() < kMaxBlocks) page_.blocks.push_back(std::move(blk));
+                    continue;
+                }
+                if (name == "textarea") {
+                    // Treat a <textarea> like a text input (e.g. DuckDuckGo's
+                    // search box is a <textarea name="q">, not an <input>).
                     flushText();
                     Block blk;
                     blk.kind = BlockKind::Input;

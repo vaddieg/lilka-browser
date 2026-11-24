@@ -360,6 +360,21 @@ void setStageFn(StageFn fn) { g_stageFn = fn; }
 
 std::string g_acceptLang = "en";  // explicit user preference, not an assumption
 void setAcceptLanguage(const std::string& v) { g_acceptLang = v.empty() ? "en" : v; }
+
+// User-Agent, selectable from Settings as a preset. "mobile" is the default:
+// it signals a mobile browser so sites serve lighter mobile variants (and keep
+// their search boxes / forms). "harbuz" is the honest minimal identity.
+static const char* kUaHarbuz = "Harbuz/0.1 (ESP32; FreeRTOS)";
+static const char* kUaMobile  = "Mozilla/5.0 (FreeRTOS; ESP32; Mobile) Mobile Safari/537.36";
+std::string g_userAgent = kUaMobile;
+std::string userAgentStr() { return g_userAgent; }
+void setUserAgent(const std::string& v) { g_userAgent = v.empty() ? kUaMobile : v; }
+void applyUaPreset(const std::string& preset) {
+    // "lilka" is accepted as a legacy alias for "harbuz" (pre-rename store value).
+    bool herb = (preset == "harbuz" || preset == "lilka");
+    g_userAgent = herb ? kUaHarbuz : kUaMobile;
+    Serial.printf("[net] UA preset=%s -> %s\n", preset.c_str(), g_userAgent.c_str());
+}
 static void stage(const char* s) { if (g_stageFn) g_stageFn(s); }
 
 // Per-host IP cache. A netconn DNS lookup (WiFi.hostByName) from a background
@@ -910,7 +925,7 @@ bool Client::fetchBinary(const std::string& url, std::string& out, std::string& 
         std::string cookieHdr = getCookieHeader(u.host);
         std::string req = "GET " + u.path + " HTTP/1.1\r\n"
                           "Host: " + u.host + "\r\n"
-                          "User-Agent: Mozilla/5.0 (FreeRTOS; ESP32; Mobile) Mobile Safari/537.36\r\n"
+                          "User-Agent: " + g_userAgent + "\r\n"
                           "Accept: image/jpeg,image/png,*/*;q=0.2\r\n"
                           "Accept-Encoding: identity\r\n" +
                           (cookieHdr.empty() ? "" : ("Cookie: " + cookieHdr + "\r\n")) +

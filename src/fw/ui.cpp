@@ -22,9 +22,16 @@ constexpr int kFooterH = 14;
 // The panel has rounded corners, so keep the top/bottom bars off the extreme
 // left/right edges (inset from both sides).
 constexpr int kBarInset = 25;
-const uint16_t C_ACCENT = 0x07FF;    // cyan (R0 G31 B31) — same convention as lilka-boombox
-const uint16_t C_LINK = 0x07FF;      // cyan for links
-const uint16_t C_DIM = 0x841C;
+const uint16_t C_ACCENT = 0xFC40;    // pumpkin orange (R255 G137 B0) — Harbuz theme
+const uint16_t C_LINK = 0xFC40;      // orange for links
+const uint16_t C_DIM = 0x841C;       // neutral dim (placeholders, borders)
+const uint16_t C_FOOT = 0x0400;      // dark green (R0 G128 B0) — bottom-bar text
+// horizontal group (chip) layout
+constexpr int kGrpBoxH = 16;  // a chip's height
+constexpr int kGrpGap = 5;    // gap between chips / rows
+constexpr int kGrpPad = 4;    // left/right page padding
+constexpr int kGrpMax = 16;   // don't group runs longer than this (stay vertical)
+constexpr size_t kGrpMaxText = 18;  // per-item text length to count as "short"
 
 // Top bar background: full width (looks better edge-to-edge; the panel's rounded
 // corners clip it naturally). The title text and footer hint are still inset by
@@ -37,8 +44,10 @@ void headerTitle(Arduino_GFX* g, const char* text, uint16_t color) {
     font::text(g, kBarInset, 3, font::fit(text, w, 1), color, 1);
 }
 void footer(Arduino_GFX* g, const char* text, uint16_t color) {
+    // Bottom bar text is always the theme's dark green (Harbuz), regardless of
+    // the color a caller passes — the accent is reserved for the top bar.
     int w = g->width() - 2 * kBarInset;
-    font::text(g, kBarInset, g->height() - kFooterH + 1, font::fit(text, w, 1), color, 1);
+    font::text(g, kBarInset, g->height() - kFooterH + 1, font::fit(text, w, 1), C_FOOT, 1);
 }
 
 
@@ -89,10 +98,49 @@ uint8_t Browser::lineScale(int lineIdx) const {
 }
 
 int Browser::lineH(int lineIdx) const {
-    if (lineIdx >= 0 && lineIdx < (int)lines_.size() && lines_[lineIdx].img)
-        return lines_[lineIdx].phh > 0 ? lines_[lineIdx].phh : 90;
+    if (lineIdx >= 0 && lineIdx < (int)lines_.size()) {
+        const Line& l = lines_[lineIdx];
+        if (l.img) return l.phh > 0 ? l.phh : 90;
+        if (l.group) return groupRows(lineIdx) * (kGrpBoxH + kGrpGap);
+    }
     uint8_t s = lineScale(lineIdx);
     return s >= 3 ? 42 : (s >= 2 ? 22 : 15);
+}
+
+int Browser::groupRows(int lineIdx) const {
+    const Line& l = lines_[lineIdx];
+    int W = gfx_ ? gfx_->width() : 240;
+    int x = kGrpPad, rows = 1;
+    for (int bi : l.items) {
+        if (bi < 0 || bi >= (int)page_.blocks.size()) continue;
+        int bw = font::width(page_.blocks[bi].text.c_str(), 1) + 10;
+        if (x + bw > W - kGrpPad && x > kGrpPad) { rows++; x = kGrpPad + bw; }
+        else x += bw + kGrpGap;
+    }
+    return rows;
+}
+
+int Browser::visibleTop() const {
+    if (lines_.empty()) return 0;
+    int H = gfx_ ? gfx_->height() : 240;
+    int availH = H - kHeaderH - kFooterH;
+    int start = lineCursor_;
+    if (start < 0) start = 0;
+    if (start >= (int)lines_.size()) start = (int)lines_.size() - 1;
+    // Grow the window UPWARD from the cursor (real heights) until ~half the
+    // height is filled; the render loop then fills downward. This keeps the
+    // cursor line on screen even when group/image lines are tall.
+    int top = start;
+    int used = lineH(start);
+    int budget = availH / 2;
+    while (top > 0) {
+        int above = lineH(top - 1);
+        if (used + above > availH) break;
+        used += above;
+        top--;
+        if (used >= budget) break;
+    }
+    return top;
 }
 
 // Recent sites: saved history; if empty, a small built-in starter list.
@@ -149,6 +197,7 @@ bool Browser::begin(Arduino_GFX* gfx) {
 bool Browser::clickable(int lineIdx) const {
     if (lineIdx < 0 || lineIdx >= (int)lines_.size()) return false;
     const Line& l = lines_[lineIdx];
+    if (l.group) return true;           // a group of buttons/links is clickable
     if (!l.href.empty()) return true;   // table row with a link
     if (l.block < 0 || l.block >= (int)page_.blocks.size()) return false;
     auto k = page_.blocks[l.block].kind;
@@ -285,9 +334,50 @@ void Browser::buildLines() {
     lines_.clear();
     links_.clear();
     const int16_t maxW = gfx_ ? gfx_->width() - 10 : 230;
+
+    // Horizontal groups: a tight run (2..kGrpMax) of consecutive short
+    // buttons/links is rendered as one wrapping row of chips instead of a
+    // stack of full-width lines. Recognize the runs up front.
+    auto isGrpItem = [&](const lilka::Block& bb) {
+        if (bb.kind != BlockKind::Button && bb.kind != BlockKind::Link) return false;
+        if (bb.text.empty() || bb.text.size() > kGrpMaxText) return false;
+        return !isBoilerplate(bb);
+    };
+    std::vector<int> grpStart;                 // block index that begins a group
+    std::vector<int> grpMember(page_.blocks.size(), 0);
+    {
+        size_t i = 0;
+        while (i < page_.blocks.size()) {
+            if (isGrpItem(page_.blocks[i])) {
+                size_t j = i;
+                while (j < page_.blocks.size() && isGrpItem(page_.blocks[j])) j++;
+                if (j - i >= 2 && j - i <= kGrpMax) {
+                    grpStart.push_back((int)i);
+                    for (size_t k = i; k < j; k++) grpMember[k] = 1;
+                }
+                i = j;
+            } else i++;
+        }
+    }
+    auto isGrpStart = [&](int i) {
+        for (int g : grpStart) if (g == i) return true;
+        return false;
+    };
+
     for (int i = 0; i < (int)page_.blocks.size(); i++) {
         const auto& b = page_.blocks[i];
         if (isBoilerplate(b)) continue;
+        if (isGrpStart(i)) {
+            Line g; g.block = i; g.group = true; g.sel = 0;
+            int j = i;
+            while (j < (int)page_.blocks.size() && grpMember[j]) { g.items.push_back(j); j++; }
+            int last = g.items.back();
+            g.text = page_.blocks[g.items[0]].text;  // not shown, but keep a label
+            lines_.push_back(std::move(g));
+            i = last;  // skip the remaining group members
+            continue;
+        }
+        if (grpMember[i]) continue;  // member of an already-emitted group
         char buf[64];
         switch (b.kind) {
             case BlockKind::Heading: {
@@ -319,8 +409,14 @@ void Browser::buildLines() {
                 break;
             }
             case BlockKind::Input: {
-                // caption only; renderPage draws the field rectangle around it
-                Line l{i, b.placeholder.empty() ? b.name : b.placeholder, false, true};
+                // Show the typed value if the user has entered one, else the
+                // placeholder/name caption. Key must match inputPurpose_ (used
+                // when the value is stored on START).
+                std::string key = b.name.empty() ? b.placeholder : b.name;
+                std::string shown = key;
+                auto it = fieldValues_.find(key);
+                if (it != fieldValues_.end() && !it->second.empty()) shown = it->second;
+                Line l{i, shown, false, true};
                 lines_.push_back(std::move(l));
                 break;
             }
@@ -373,13 +469,7 @@ void Browser::buildLines() {
 
 void Browser::frameClickables(std::vector<int>& out) const {
     out.clear();
-    // same window math as renderPage so SELECT matches what is on screen
-    int cap = (gfx_->height() - kHeaderH - kFooterH) / lineH();
-    if (cap < 1) cap = 1;
-    int top = lineCursor_;
-    if (lineCursor_ >= cap) top = lineCursor_ - cap / 2;
-    if (top + cap > (int)lines_.size()) top = (int)lines_.size() - cap;
-    if (top < 0) top = 0;
+    int top = visibleTop();
     int y = kHeaderH + 4;
     for (int i = top; i < (int)lines_.size(); i++) {
         int lh = lineH(i);
@@ -387,6 +477,23 @@ void Browser::frameClickables(std::vector<int>& out) const {
         if (clickable(i)) out.push_back(i);
         y += lh;
     }
+}
+
+// Flat list of every visible clickable ELEMENT, in order. A group line
+// contributes one element per chip (lineIdx, chipSel); any other clickable
+// line contributes (lineIdx, 0).
+std::vector<std::pair<int,int>> Browser::clickableElements() const {
+    std::vector<int> cl;
+    frameClickables(cl);
+    std::vector<std::pair<int,int>> out;
+    for (int i : cl) {
+        if (i >= 0 && i < (int)lines_.size() && lines_[i].group) {
+            for (size_t k = 0; k < lines_[i].items.size(); k++) out.push_back({i, (int)k});
+        } else {
+            out.push_back({i, 0});
+        }
+    }
+    return out;
 }
 
 namespace {
@@ -476,6 +583,7 @@ void Browser::navigate(const std::string& urlIn, bool fromRedirect) {
     net::setStageFn([](const char* s) { g_browser.onStage(s); });
     std::string lang = store::get("lang", "uk");
     net::setAcceptLanguage(lang == "uk" ? "uk,ru;q=0.8" : lang == "ru" ? "ru,en;q=0.8" : "en");
+    net::applyUaPreset(store::get("ua", "mobile"));
     img::clear();  // stop any in-flight background images from the previous page
     busyStage_ = "start";
     busyDownload_ = false;
@@ -564,10 +672,14 @@ static std::string findAutoRedirect(const std::string& html) {
         if (s[i] == '"' || s[i] == '\'') i++;
         size_t e = s.find_first_of("\"'", i);
         std::string v = (e == std::string::npos) ? s.substr(i) : s.substr(i, e - i);
-        // entity-decode &amp; (DDG hrefs carry &amp;rut=...)
+        // entity-decode the common ones (DDG wraps the URL in &quot; and
+        // hrefs carry &amp;rut=...)
         std::string out;
         for (size_t k = 0; k < v.size(); k++) {
-            if (v.compare(k, 5, "&amp;") == 0) { out += '&'; k += 4; }
+            if (v.compare(k, 6, "&quot;") == 0) { out += '"'; k += 5; }
+            else if (v.compare(k, 6, "&apos;") == 0) { out += '\''; k += 5; }
+            else if (v.compare(k, 5, "&#39;") == 0) { out += '\''; k += 4; }
+            else if (v.compare(k, 5, "&amp;") == 0) { out += '&'; k += 4; }
             else out += v[k];
         }
         return out;
@@ -587,7 +699,12 @@ static std::string findAutoRedirect(const std::string& html) {
                 if (u != std::string::npos) {
                     std::string t = content.substr(u + 4);
                     while (!t.empty() && (t.front() == ' ' || t.front() == '\t')) t.erase(t.begin());
-                    if (t.rfind("http://", 0) == 0 || t.rfind("https://", 0) == 0) return t;
+                    // strip surrounding quotes (DDG wraps the URL in them)
+                    while (!t.empty() && (t.front() == '"' || t.front() == '\'')) t.erase(t.begin());
+                    while (!t.empty() && (t.back() == '"' || t.back() == '\'')) t.pop_back();
+                    // Accept relative targets too (e.g. DDG "url=/html?q=...");
+                    // the caller resolves them against the page URL.
+                    if (!t.empty() && t.find("javascript:") != 0) return t;
                 }
             }
         }
@@ -649,14 +766,21 @@ void Browser::finishLoad(const std::string& url, std::string html, const std::st
     }
     // a new page invalidates any in-page find
     findActive_ = false; findTerm_.clear(); findMatches_.clear();
+    fieldValues_.clear();  // typed field values are per-page
     // no-JS redirect stubs (e.g. DuckDuckGo result links): follow the target
     {
         std::string redir = findAutoRedirect(html);
         if (!redir.empty()) {
-            if (redirDepth_ < 5 && redir != url) {
-                Serial.printf("[nav] auto-redirect hop %d -> %s\n", redirDepth_ + 1, redir.c_str());
+            std::string target = redir;
+            if (target[0] == '/' || (target[0] == '.' && target[1] == '/')) {
+                std::string base = finalUrl.empty() ? url : finalUrl;
+                net::Url u;
+                if (net::parseUrl(base, u)) target = net::resolve(u, target);
+            }
+            if (redirDepth_ < 5 && target != url) {
+                Serial.printf("[nav] auto-redirect hop %d -> %s\n", redirDepth_ + 1, target.c_str());
                 redirDepth_++;
-                navigate(redir, true);   // keep the hop budget across stubs
+                navigate(target, true);   // keep the hop budget across stubs
                 return;
             }
             Serial.printf("[nav] auto-redirect loop, stopping at %s\n", url.c_str());
@@ -849,6 +973,16 @@ void Browser::serialCmd(const std::string& in) {
         Serial.printf("[cmd] cursor -> %d\n", lineCursor_);
         return;
     }
+    if (line == "ua" || line.rfind("ua ", 0) == 0) {
+        std::string p = (line == "ua") ? store::get("ua", "mobile") : line.substr(3);
+        while (!p.empty() && p.front() == ' ') p.erase(p.begin());
+        if (p == "lilka" || p == "mobile") {
+            store::set("ua", p);
+            net::applyUaPreset(p);
+        }
+        Serial.printf("[cmd] ua=%s -> %s\n", store::get("ua", "mobile").c_str(), net::userAgentStr().c_str());
+        return;
+    }
     if (line == "findnext") { findNext(true); Serial.printf("[cmd] findnext -> %d (pos %d/%d)\n", lineCursor_, findPos_ + 1, (int)findMatches_.size()); return; }
     if (line == "findclear") { findActive_ = false; findMatches_.clear(); findTerm_.clear(); dirty_ = true; Serial.printf("[cmd] find cleared\n"); return; }
     if (line.rfind("find", 0) == 0) {
@@ -901,6 +1035,13 @@ void Browser::serialCmd(const std::string& in) {
         return;
     }
     if (line == "kbclear") { kb_.reset(); Serial.printf("[cmd] kb reset\n"); return; }
+    if (line.rfind("kbsend", 0) == 0) {
+        std::string v = line.substr(7);
+        while (!v.empty() && v.front() == ' ') v.erase(v.begin());
+        kb_.setValue(v);
+        Serial.printf("[cmd] kb value set to '%s'\n", v.c_str());
+        return;
+    }
     if (line == "err") { Serial.printf("err: %s\n", errText_.c_str()); return; }
     if (line == "mkt") {
         Serial.printf("[sd] /browser exists=%d\n", (int)SD.exists("/browser"));
@@ -933,7 +1074,7 @@ void Browser::serialCmd(const std::string& in) {
             const auto& L = lines_[i];
             if (L.block >= 0 && L.block < (int)page_.blocks.size()) {
                 const auto& b = page_.blocks[L.block];
-                Serial.printf("line %d: block=%d kind=%d sel=%d '%.*s' href='%s'\n", i, L.block, (int)b.kind, sel_, 30, L.text.c_str(), b.href.c_str());
+                Serial.printf("line %d: block=%d kind=%d grp=%d items=%d field=%d '%.*s' href='%s'\n", i, L.block, (int)b.kind, (int)L.group, (int)L.items.size(), (int)L.field, 30, L.text.c_str(), b.href.c_str());
             }
         }
         return;
@@ -1049,7 +1190,14 @@ void Browser::activate(int lineIdx) {
         else navigate(target);
         return;
     }
-    const auto& b = page_.blocks[lines_[lineIdx].block];
+    // A group line acts on its currently-selected member (L/R to change).
+    int bi = lines_[lineIdx].block;
+    if (lines_[lineIdx].group) {
+        size_t s = lines_[lineIdx].sel < (int)lines_[lineIdx].items.size() ? lines_[lineIdx].sel : 0;
+        bi = lines_[lineIdx].items[s];
+    }
+    if (bi < 0 || bi >= (int)page_.blocks.size()) return;
+    const auto& b = page_.blocks[bi];
     if (b.kind == BlockKind::Link && !b.href.empty()) {
         std::string target = b.href;
         if (target[0] == '/' || (target[0] == '.' && target[1] == '/')) {
@@ -1066,8 +1214,25 @@ void Browser::activate(int lineIdx) {
                 if (net::parseUrl(currentUrl_, u)) target = net::resolve(u, target);
             }
             auto fields = withChecks(b);
-            if (b.formMethod == "POST") submitPost(target, fields, b.name, b.text);
-            else navigate(target);
+            // Include text fields the user has typed into (START stores them
+            // in fieldValues_); skip names the form already provides.
+            for (const auto& kv : fieldValues_) {
+                if (kv.first.empty()) continue;
+                bool dup = false;
+                for (const auto& f : fields) if (f.first == kv.first) { dup = true; break; }
+                if (!dup) fields.emplace_back(kv.first, kv.second);
+            }
+            if (b.formMethod == "POST") {
+                submitPost(target, fields, b.name, b.text);
+            } else {
+                // GET form: send typed + hidden fields as a query string.
+                std::string q = formEncode(fields, b.name, b.text);
+                if (!q.empty()) {
+                    std::string sep = target.find('?') == std::string::npos ? "?" : "&";
+                    target += sep + q;
+                }
+                navigate(target);
+            }
         }
     } else if (b.kind == BlockKind::Input) {
         inputPurpose_ = b.name.empty() ? b.placeholder : b.name;
@@ -1082,7 +1247,7 @@ void Browser::activate(int lineIdx) {
     } else if (b.kind == BlockKind::Select) {
         if (!b.options.empty()) {
             // cycle: mutate a working copy kept in expanded_? simplest: rebuild page
-            int i = lines_[lineIdx].block;
+            int i = bi;
             page_.blocks[i].selected = (page_.blocks[i].selected + 1) % page_.blocks[i].options.size();
             buildLines();
         }
@@ -1117,13 +1282,19 @@ bool Browser::loop() {
                 if (findActive_ && !findMatches_.empty()) {
                     findNext(true);   // cycle to the next match
                 } else {
-                    // jump selection to the next interactive element (wraps)
-                    std::vector<int> cl;
-                    frameClickables(cl);
+                    // SELECT cycles through every visible clickable element
+                    // (group chips are individual elements); A/START activates it.
+                    auto cl = clickableElements();
                     if (!cl.empty()) {
+                        int curSel = (lineCursor_ >= 0 && lineCursor_ < (int)lines_.size())
+                                     ? lines_[lineCursor_].sel : 0;
                         size_t pos = 0;
-                        for (size_t i = 0; i < cl.size(); i++) if (cl[i] == lineCursor_) pos = i;
-                        lineCursor_ = cl[(pos + 1) % cl.size()];
+                        for (size_t i = 0; i < cl.size(); i++)
+                            if (cl[i].first == lineCursor_ && cl[i].second == curSel) pos = i;
+                        int nl = cl[(pos + 1) % cl.size()].first;
+                        int ns = cl[(pos + 1) % cl.size()].second;
+                        lineCursor_ = nl;
+                        if (nl >= 0 && nl < (int)lines_.size()) lines_[nl].sel = ns;
                     }
                 }
                 sel_ = -1;
@@ -1182,7 +1353,7 @@ bool Browser::loop() {
             break;
         }
         case SETTINGS: {
-            constexpr int nItems = 7;
+            constexpr int nItems = 8;
             bool touched = false;
             if (just(Buttons::UP)) { linklistSel_ = (linklistSel_ + nItems - 1) % nItems; touched = true; }
             else if (just(Buttons::DOWN)) { linklistSel_ = (linklistSel_ + 1) % nItems; touched = true; }
@@ -1203,17 +1374,24 @@ bool Browser::loop() {
                     net::setAcceptLanguage(nx == "uk" ? "uk,ru;q=0.8" :
                                            nx == "ru" ? "ru,en;q=0.8" : "en");
                 } else if (linklistSel_ == 3) {
+                    // UA preset: mobile -> harbuz -> mobile ...
+                    std::string cur = store::get("ua", "mobile");
+                    std::string nx = (cur == "harbuz" || cur == "lilka") ? "mobile" : "harbuz";
+                    store::set("ua", nx);
+                    net::applyUaPreset(nx);
+                    buildLines();
+                } else if (linklistSel_ == 4) {
                     // add current page to favorites (shown in Quick Start)
                     if (currentUrl_.rfind("http", 0) == 0) {
                         store::addFavorite(currentUrl_);
                         Serial.printf("[fav] added %s\n", currentUrl_.c_str());
                     }
-                } else if (linklistSel_ == 4) {
+                } else if (linklistSel_ == 5) {
                     // compact mode: drop boilerplate nav/footer blocks
                     compact_ = !compact_;
                     store::set("compact", compact_ ? "1" : "0");
                     buildLines();
-                } else if (linklistSel_ == 5) {
+                } else if (linklistSel_ == 6) {
                     // in-page find: ask for a term, then jump to first match
                     inputPurpose_ = "find";
                     kb_.reset();
@@ -1282,19 +1460,37 @@ bool Browser::loop() {
                         errText_ = "not found: " + v;
                         mode_ = ERROR;
                     }
-                } else if (!inputFormAction_.empty()) {
-                    std::string action = inputFormAction_;
-                    // relative action (e.g. Google's "/search") -> resolve against page host
-                    if (action.find("://") == std::string::npos) {
-                        net::Url u;
-                        if (net::parseUrl(currentUrl_, u)) action = net::resolve(u, action);
+                } else {
+                    // A form text field: START submits the form with the typed
+                    // value (the common search-box behavior). We submit from the
+                    // field itself rather than relying on the page's submit
+                    // button, which on many sites (e.g. DuckDuckGo) is an
+                    // icon/JS-only button with no text that a text parser drops.
+                    if (!v.empty()) fieldValues_[inputPurpose_] = v;
+                    Serial.printf("[field] %s = '%s'\n", inputPurpose_.c_str(), v.c_str());
+                    if (!inputFormAction_.empty()) {
+                        std::string target = inputFormAction_;
+                        if (target[0] == '/' || (target[0] == '.' && target[1] == '/')) {
+                            net::Url u;
+                            if (net::parseUrl(currentUrl_, u)) target = net::resolve(u, target);
+                        }
+                        auto fields = withChecksFields(inputFormFields_, inputCheckIds_);
+                        bool dup = false;
+                        for (const auto& f : fields) if (f.first == inputPurpose_) { dup = true; break; }
+                        if (!dup && !inputPurpose_.empty()) fields.emplace_back(inputPurpose_, v);
+                        if (inputFormMethod_ == "POST") {
+                            submitPost(target, fields, "", "");
+                        } else {
+                            std::string q = formEncode(fields, "", "");
+                            if (!q.empty()) target += (target.find('?') == std::string::npos ? "?" : "&") + q;
+                            navigate(target);
+                        }
+                        return true;
                     }
-                    if (inputFormMethod_ == "POST") {
-                        submitPost(action, withChecksFields(inputFormFields_, inputCheckIds_), inputPurpose_, v);
-                    } else {
-                        std::string sep = action.find('?') == std::string::npos ? "?" : "&";
-                        navigate(action + sep + urlenc(inputPurpose_) + "=" + urlenc(v));
-                    }
+                    // No form to submit: just keep the value and stay on the page.
+                    mode_ = inputFrom_;
+                    buildLines();  // refresh so the field shows the typed value
+                    dirty_ = true;
                 }
             }
             break;
@@ -1363,6 +1559,7 @@ bool Browser::loop() {
                     std::string("Font: ") + (fontScale_ == 1 ? "small" : fontScale_ == 2 ? "large" : "xl"),
                     std::string("Cache: ") + (store::get("cache", "1") == "1" ? "on" : "off"),
                     std::string("Language: ") + store::get("lang", "uk"),
+                    std::string("User agent: ") + store::get("ua", "mobile"),
                     std::string("Favorite this page"),
                     std::string("Compact: ") + (compact_ ? "on" : "off"),
                     std::string("Find on page..."),
@@ -1408,10 +1605,33 @@ void Browser::renderPopup(const std::string& title, const std::vector<std::strin
     footer(gfx_, "A=ok B=back", C_DIM);
 }
 
+void Browser::renderGroupLine(int i, int& y) {
+    const Line& l = lines_[i];
+    int W = gfx_->width();
+    bool onCursor = (i == lineCursor_);
+    int x = kGrpPad, row = 0;
+    for (size_t k = 0; k < l.items.size(); k++) {
+        int bi = l.items[k];
+        if (bi < 0 || bi >= (int)page_.blocks.size()) continue;
+        const auto& b = page_.blocks[bi];
+        int tw = font::width(b.text.c_str(), 1);
+        int bw = tw + 10;
+        if (x + bw > W - kGrpPad && x > kGrpPad) { x = kGrpPad; row++; }
+        int by = y + row * (kGrpBoxH + kGrpGap);
+        bool isSel = onCursor && (int)k == l.sel;
+        gfx_->fillRect(x, by, bw, kGrpBoxH, isSel ? 0x2458 : 0x0000);
+        gfx_->drawRect(x, by, bw, kGrpBoxH, isSel ? C_ACCENT : C_DIM);
+        int tx = x + std::max(2, (bw - tw) / 2);
+        font::text(gfx_, tx, by + 1, b.text.c_str(), isSel ? 0xFFFF : C_DIM, 1);
+        x += bw + kGrpGap;
+    }
+    y += (row + 1) * (kGrpBoxH + kGrpGap);
+}
+
 void Browser::renderPage() {
     gfx_->fillScreen(0x0000);
     // header: short url + image-download progress on the right, e.g. "(3/8)"
-    std::string h = currentUrl_.empty() ? "Lilka Browser" : currentUrl_;
+    std::string h = currentUrl_.empty() ? "Harbuz" : currentUrl_;
     if (h.rfind("https://", 0) == 0) h = h.substr(8);
     std::string prog;
     {
@@ -1429,21 +1649,14 @@ void Browser::renderPage() {
         font::text(gfx_, kBarInset, 3, font::fit(h.c_str(), w, 1), 0x0000, 1);
     }
     if (!prog.empty()) {
-        // Solid black on the bright cyan bar (boombox C_SEL/C_SEL_TEXT convention).
+        // Solid black on the bright orange bar (readable, matches the theme).
         int tw = font::width(prog.c_str(), 1);
         font::text(gfx_, gfx_->width() - tw - kBarInset, 3, prog.c_str(), 0x0000, 1);
     }
 
     int y = kHeaderH + 4;
     int vis = 0;
-    int top = lineCursor_;
-    {  // keep the selection visible, roughly centered in the lower half
-        int cap = (gfx_->height() - kHeaderH - kFooterH) / lineH();
-        if (cap < 1) cap = 1;
-        if (lineCursor_ >= cap) top = lineCursor_ - cap / 2;
-        if (top + cap > (int)lines_.size()) top = (int)lines_.size() - cap;
-        if (top < 0) top = 0;
-    }
+    int top = visibleTop();
     for (int i = top; i < (int)lines_.size(); i++) {
         int lh = lineH(i);
         if (y + lh > gfx_->height() - kFooterH) break;
@@ -1451,6 +1664,11 @@ void Browser::renderPage() {
         const Line& l = lines_[i];
         if (l.img) {
             renderImageLine(i, y);
+            vis++;
+            continue;
+        }
+        if (l.group) {
+            renderGroupLine(i, y);
             vis++;
             continue;
         }
@@ -1495,12 +1713,17 @@ void Browser::renderPage() {
             font::text(gfx_, tx, by + (bh - 13 * scale) / 2 + (scale > 1 ? 2 : 0),
                        font::fit(t.c_str(), (int16_t)(x1 - x0 - 6), scale), 0xFFFF, scale);
         } else if (l.field) {
-            // input field: rectangle outline with the caption inside
+            // Input field: a FILLED box with a bright border + left accent bar,
+            // so it's unmistakably "type here" (distinct from links and buttons).
             int16_t x0 = (i == lineCursor_) ? 8 : 4;
             int16_t x1 = gfx_->width() - 4;
-            gfx_->drawRect(x0, y - 1, x1 - x0, lh, C_DIM);
-            font::text(gfx_, x0 + 4, y + (lh > 16 ? 3 : 0),
-                       font::fit(t.c_str(), (int16_t)(x1 - x0 - 8), scale), c, scale);
+            int16_t bh = (lh > 18) ? lh - 2 : 16;
+            int16_t by = y + (lh - bh) / 2;
+            gfx_->fillRect(x0, by, x1 - x0, bh, 0x1B37);      // dark fill (matches selection)
+            gfx_->drawRect(x0, by, x1 - x0, bh, C_ACCENT);    // orange border
+            gfx_->fillRect(x0 + 2, by + 2, 1, bh - 4, C_ACCENT);  // left cursor bar
+            font::text(gfx_, x0 + 6, by + (bh - 13 * scale) / 2 + (scale > 1 ? 2 : 0),
+                       font::fit(t.c_str(), (int16_t)(x1 - x0 - 10), scale), 0xFFFF, scale);
         } else {
             font::text(gfx_, (i == lineCursor_) ? 8 : 4, y, font::fit(t.c_str(), gfx_->width() - 10, scale), c, scale);
         }
@@ -1683,7 +1906,7 @@ void Browser::renderDownloads() {
             label += "  ";
             label += sz;
             uint16_t bg = (i == dlSel_) ? C_ACCENT : 0x0000;
-            uint16_t fg = (i == dlSel_) ? 0x0000 : 0xDDDD;  // black on the cyan highlight = readable
+            uint16_t fg = (i == dlSel_) ? 0x0000 : 0xDDDD;  // black on the orange highlight = readable
             if (bg) gfx_->fillRect(0, y, gfx_->width(), lineH(), bg);
             font::text(gfx_, 6, y, label.c_str(), fg, 1);
             y += lineH();

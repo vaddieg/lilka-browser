@@ -7,6 +7,8 @@
 #include <Arduino_GFX_Library.h>
 #include <string>
 #include <vector>
+#include <map>
+#include <utility>
 
 namespace ui {
 
@@ -19,6 +21,11 @@ struct Line {
     std::string href;    // table row: link target (A opens it); image line: image URL
     bool img = false;    // image line: href holds the image URL, blit its cached BMP
     int phh = 0;         // image line: reserved placeholder height (scaled <= 240x180)
+    // horizontal group: a run of short items (buttons/links) laid out side by
+    // side on one row (wrapping). One navigable line; L/R pick an item, A acts.
+    bool group = false;
+    std::vector<int> items;  // block indices of the group members
+    int sel = 0;             // currently selected member (0..items.size()-1)
 };
 
 class Browser {
@@ -65,6 +72,10 @@ private:
     std::string inputFormMethod_;
     std::vector<std::pair<std::string, std::string>> inputFormFields_;
     std::vector<size_t> inputCheckIds_;  // checkbox blocks in the input's form
+    // Typed text-field values for the current page (field name -> value).
+    // START on a field stores it here (and closes the keyboard); the form's
+    // submit button picks it up when the form is sent.
+    std::map<std::string, std::string> fieldValues_;
 
     // settings
     int fontScale_ = 1;         // 1 = 13px, 2 = 20px, 3 = 40px
@@ -84,6 +95,11 @@ private:
     // derived
     int lineH() const;
     int lineH(int lineIdx) const;
+    // First visible line index, using REAL per-line heights (group/image lines
+    // are taller than text). Guarantees lineCursor_ stays on screen.
+    int visibleTop() const;
+    int groupRows(int lineIdx) const;
+    void renderGroupLine(int i, int& y);
     uint8_t lineScale(int lineIdx) const;
     std::vector<std::string> recentList() const;
     bool clickable(int lineIdx) const;
@@ -114,6 +130,7 @@ private:
     void renderBusy();
     static bool isFileUrl(const std::string& url);
     void frameClickables(std::vector<int>& out) const;
+    std::vector<std::pair<int,int>> clickableElements() const;
 
     Arduino_GFX* gfx_ = nullptr;
     Buttons* btns_ = nullptr;

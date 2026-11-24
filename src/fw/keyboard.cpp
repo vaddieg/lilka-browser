@@ -186,7 +186,7 @@ void Keyboard::draw(Arduino_GFX* gfx, const std::string& title) const {
             if (!k) continue;
             int16_t px = x * bw, py = top + y * bh;
             bool sel = (x == cx && y == cy);
-            if (sel) gfx->fillRect(px, py, bw, bh, 0x07FF);  // cyan accent (matches the top bar)
+            if (sel) gfx->fillRect(px, py, bw, bh, 0xFC40);  // pumpkin-orange accent (matches the top bar)
             const char* cap = nullptr;
             char tmp[4] = {0};
             if (k == K_L0) cap = "ab";

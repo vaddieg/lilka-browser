@@ -1,4 +1,4 @@
-// HTTP/HTTPS client for the Lilka browser (ESP32-S3).
+// HTTP/HTTPS client for Harbuz (ESP32-S3).
 // - GET with redirects (301/302/303/307/308), relative Location resolution
 // - gzip/deflate response decoding (miniz)
 // - session-only cookie jar
@@ -73,6 +73,15 @@ void loadCookieJar();   // call after store::begin()
 size_t cookieCount();
 std::string dumpCookies();
 
+/// User-Agent header value sent on every request (and in the image pipeline).
+/// Presets (see applyUaPreset):
+///   "harbuz" -> "Harbuz/0.1 (ESP32; FreeRTOS)"
+///   "mobile" -> "Mozilla/5.0 (FreeRTOS; ESP32; Mobile) Mobile Safari/537.36"
+/// ("lilka" is accepted as a legacy alias for "harbuz".)
+std::string userAgentStr();
+void setUserAgent(const std::string& v);
+void applyUaPreset(const std::string& preset);
+
 class Client {
 public:
     /// GET `url`. Follows up to `maxRedirects` redirects.
@@ -80,16 +89,14 @@ public:
     /// Returns false with a short human reason in `err`.
     bool get(const std::string& url, std::string& outBody, std::string& outFinalUrl,
              std::string& err, int timeoutMs = 15000, int maxRedirects = 5,
-             const std::string& userAgent =
-                 "Mozilla/5.0 (FreeRTOS; ESP32; Mobile) Mobile Safari/537.36");
+             const std::string& userAgent = userAgentStr());
 
     /// GET with conditional revalidation: sends If-None-Match / If-Modified-Since.
     /// On 304 the body is left empty and lastNotModified() is true.
     bool getCond(const std::string& url, std::string& outBody, std::string& outFinalUrl,
                  std::string& err, const std::string& ifNoneMatch, const std::string& ifModifiedSince,
                  int timeoutMs = 15000, int maxRedirects = 5,
-                 const std::string& userAgent =
-                     "Mozilla/5.0 (FreeRTOS; ESP32; Mobile) Mobile Safari/537.36");
+                 const std::string& userAgent = userAgentStr());
 
     /// Fetch a binary (image) into `out` (PSRAM), streaming with a hard size cap.
     /// Only accepts image/jpeg / image/png; aborts (returns false) on other types,
@@ -104,8 +111,7 @@ public:
     bool post(const std::string& url, const std::string& form,
               std::string& outBody, std::string& outFinalUrl, std::string& err,
               int timeoutMs = 15000, int maxRedirects = 5,
-              const std::string& userAgent =
-                  "Mozilla/5.0 (FreeRTOS; ESP32; Mobile) Mobile Safari/537.36");
+              const std::string& userAgent = userAgentStr());
 
 private:
     bool open(const Url& u, int timeoutMs, WiFiClientSecure& client, std::string& err);
@@ -145,8 +151,7 @@ public:
     long download(const std::string& url, const std::string& sdPath,
                   std::string& err, std::string& finalUrl, std::string& outContentType,
                   int timeoutMs = 180000, int maxRedirects = 5,
-                  const std::string& userAgent =
-                      "Mozilla/5.0 (FreeRTOS; ESP32; Mobile) Mobile Safari/537.36");
+                  const std::string& userAgent = userAgentStr());
 };
 
 /// Progress/stage reporting: called with "dns", "tcp", "tls", "send",

@@ -121,7 +121,8 @@ static int pngDraw(PNGDRAW* d) {
             if (bpp == 16) { r = p[x * 8]; g = p[x * 8 + 2]; b = p[x * 8 + 4]; }
             else { r = p[x * 4]; g = p[x * 4 + 1]; b = p[x * 4 + 2]; }
         }
-        out[y * w + x] = (uint16_t)((r << 11) | (g << 5) | b);
+        // r/g/b are 8-bit (or 16-bit-high-byte); reduce to 5/6/5 for RGB565.
+        out[y * w + x] = (uint16_t)((((r >> 3) & 0x1F) << 11) | (((g >> 2) & 0x3F) << 5) | ((b >> 3) & 0x1F));
     }
     return 1;  // 1 = continue decoding (0 = quit early)
 }
@@ -251,9 +252,12 @@ static void downscale(const uint16_t* src, int sw, int sh, uint16_t* dst, int tw
         return src[(size_t)y * sw + x];
     };
     for (int y = 0; y < th; y++) {
-        int cy = (int)(((long)(y + 1) * sh) / th / 2);
+        // center of output row y maps to source row (2y+1)*sh/(2th). (An earlier
+        // version did (y+1)*sh/th/2, which only ever sampled the top half and
+        // stretched it to full height -> "2x tall and cropped".)
+        int cy = (int)(((long)(2 * y + 1) * sh) / (2 * th));
         for (int x = 0; x < tw; x++) {
-            int cx = (int)(((long)(x + 1) * sw) / tw / 2);
+            int cx = (int)(((long)(2 * x + 1) * sw) / (2 * tw));
             long r = 0, g = 0, b = 0, n = 0;
             for (int dy = -1; dy <= 1; dy++)
                 for (int dx = -1; dx <= 1; dx++) {
