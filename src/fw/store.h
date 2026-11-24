@@ -10,6 +10,11 @@ namespace store {
 
 bool begin();
 
+/// Recursively delete the entire /browser tree (settings, history, favorites,
+/// cache, cookies, downloads, images) so the app starts from a clean slate.
+/// Re-creating the base directory is left to the next begin()/ensureDir().
+bool wipe();
+
 /// Settings (plain key=value, one per line).
 std::string get(const std::string& key, const std::string& fallback = "");
 void set(const std::string& key, const std::string& value);

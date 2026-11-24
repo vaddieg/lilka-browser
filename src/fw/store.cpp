@@ -17,6 +17,26 @@ bool ensureDir() {
     return ok;
 }
 
+// Recursive delete: SdFat's SD.remove() only takes a file or an *empty*
+// directory, so walk the tree bottom-up (children first), then remove each
+// directory once empty.
+void rmTree(const char* path) {
+    File dir = SD.open(path, FILE_READ);
+    if (!dir) return;
+    if (!dir.isDirectory()) { dir.close(); SD.remove(path); return; }
+    File entry = dir.openNextFile();
+    while (entry) {
+        std::string child = entry.path();
+        bool isDir = entry.isDirectory();
+        entry.close();
+        if (isDir) rmTree(child.c_str());
+        else SD.remove(child.c_str());
+        entry = dir.openNextFile();
+    }
+    dir.close();
+    SD.remove(path);  // now-empty directory
+}
+
 std::string hashOf(const std::string& s) {
     unsigned char md[16];
     mbedtls_md5((const unsigned char*)s.data(), s.size(), md);
@@ -32,6 +52,13 @@ bool begin() {
     if (!initSD()) { Serial.printf("[store] SD init FAILED\n"); return false; }
     Serial.printf("[store] SD ok, total=%u used=%u\n", (unsigned)SD.totalBytes(), (unsigned)SD.usedBytes());
     return ensureDir();
+}
+
+bool wipe() {
+    if (!SD.exists(kDir)) { Serial.printf("[store] wipe: %s absent, nothing to do\n", kDir); return true; }
+    rmTree(kDir);
+    Serial.printf("[store] wiped %s (still present=%d)\n", kDir, (int)SD.exists(kDir));
+    return true;
 }
 
 std::string get(const std::string& key, const std::string& fallback) {

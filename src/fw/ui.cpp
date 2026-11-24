@@ -148,11 +148,11 @@ std::vector<std::string> Browser::recentList() const {
     auto urls = store::urls(6);
     if (!urls.empty()) return urls;
     return {
-        "https://www.google.com",
+        "https://www.startpage.com",
         "https://duckduckgo.com",
         "https://www.bbc.com/news",
-        "https://habr.com/ru/articles/",
-        "https://ru.wikipedia.org",
+        "https://lilka.dev",
+        "https://uk.wikipedia.org",
     };
 }
 
@@ -861,6 +861,14 @@ void Browser::serialCmd(const std::string& in) {
     if (line == "heap") {
         Serial.printf("[cmd] heap free=%u psram=%u\n", (unsigned)ESP.getFreeHeap(),
                       (unsigned)ESP.getFreePsram());
+        return;
+    }
+    if (line == "wipe") {
+        // Fresh-start test: delete the whole /browser tree (settings, history,
+        // favorites, cache, cookies, downloads, images). The next begin()/
+        // ensureDir() recreates the base directory.
+        bool ok = store::wipe();
+        Serial.printf("[cmd] wipe %s\n", ok ? "ok" : "FAILED");
         return;
     }
     if (line == "imgls") {
