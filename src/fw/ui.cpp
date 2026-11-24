@@ -1410,22 +1410,19 @@ bool Browser::loop() {
                 }
                 act = true;
             } else if (just(Buttons::A)) {
-                // A = primary action on the element under the cursor:
-                // link/button -> activate, input -> keyboard, select -> cycle.
-                int bi = lines_[lineCursor_].block;
-                if (bi >= 0 && bi < (int)page_.blocks.size()) {
-                    auto& blk = page_.blocks[bi];
-                    if (blk.kind == BlockKind::Link || blk.kind == BlockKind::Button) {
-                        activate(lineCursor_);
-                    } else if (blk.kind == BlockKind::Input) {
-                        activate(lineCursor_);
-                    } else if (blk.kind == BlockKind::Checkbox) {
-                        blk.checked = !blk.checked;
-                        dirty_ = true;
-                    } else if (blk.kind == BlockKind::Select && !blk.options.empty()) {
-                        blk.selected = (blk.selected + 1) % blk.options.size();
-                        buildLines();
-                    }
+                // A = primary action. Delegate to activate(), which handles every
+                // actionable line kind (table-row links via .href, group chips,
+                // links, buttons, inputs, selects). Only checkboxes are toggled
+                // inline, since activate() has no checkbox case.
+                int bi = (lineCursor_ >= 0 && lineCursor_ < (int)lines_.size())
+                         ? lines_[lineCursor_].block : -1;
+                bool isCheck = (bi >= 0 && bi < (int)page_.blocks.size() &&
+                                page_.blocks[bi].kind == BlockKind::Checkbox);
+                if (isCheck) {
+                    page_.blocks[bi].checked = !page_.blocks[bi].checked;
+                    dirty_ = true;
+                } else {
+                    activate(lineCursor_);
                 }
                 act = true;
             } else if (just(Buttons::B)) {
