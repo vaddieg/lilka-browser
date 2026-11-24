@@ -39,7 +39,7 @@ public:
 
 private:
     // state
-    enum Mode { PAGE, LINKLIST, SETTINGS, QUICKSTART, INPUTMODE, BUSY, ERROR, DONE, DOWNLOADS };
+    enum Mode { PAGE, LINKLIST, SETTINGS, QUICKSTART, INPUTMODE, BUSY, ERROR, DONE, DOWNLOADS, CONTEXT };
     Mode mode_ = PAGE;
     Mode inputFrom_ = PAGE;  // where to return when the keyboard is cancelled
 
@@ -52,6 +52,7 @@ private:
     int lineCursor_ = 0;
     int sel_ = -1;            // selected clickable line (into lines_)
     int linklistSel_ = 0;
+    int ctxLine_ = -1;        // CONTEXT menu: the line (element) the menu targets
 
     std::vector<std::string> history_;   // navigation stack
     std::string currentUrl_;
@@ -121,6 +122,10 @@ private:
     void onStage(const char* s);
     void goBack();
     void activate(int lineIdx);
+    // START context menu (desktop-browser style) on the element under the cursor
+    std::vector<std::string> contextItems(int lineIdx) const;
+    void contextAct(int itemIdx);
+    void renderContext();
     void renderPage();
     void renderLinkList();
     void renderPopup(const std::string& title, const std::vector<std::string>& items, int sel);

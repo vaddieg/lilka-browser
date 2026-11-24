@@ -1254,10 +1254,104 @@ void Browser::activate(int lineIdx) {
     }
 }
 
+std::vector<std::string> Browser::contextItems(int lineIdx) const {
+    std::vector<std::string> items;
+    if (lineIdx < 0 || lineIdx >= (int)lines_.size()) return items;
+    const Line& l = lines_[lineIdx];
+    // table row carrying a link
+    if (!l.href.empty()) {
+        items.push_back("Open");
+        items.push_back("Download file");
+        return items;
+    }
+    int bi = l.block;
+    if (l.group) {
+        size_t s = l.sel < (int)l.items.size() ? (size_t)l.sel : 0;
+        if (s < l.items.size()) bi = l.items[s];
+    }
+    if (bi < 0 || bi >= (int)page_.blocks.size()) return items;
+    const auto& b = page_.blocks[bi];
+    if (b.kind == BlockKind::Link && !b.href.empty()) {
+        items.push_back("Open link");
+        items.push_back("Download file");
+    } else if (b.kind == BlockKind::Button) {
+        items.push_back("Press button");
+    } else if (b.kind == BlockKind::Input) {
+        items.push_back("Type text");
+    } else if (b.kind == BlockKind::Checkbox) {
+        items.push_back(b.checked ? "Uncheck" : "Check");
+    } else if (b.kind == BlockKind::Select && !b.options.empty()) {
+        items.push_back("Next option");
+    }
+    return items;
+}
+
+void Browser::contextAct(int itemIdx) {
+    int li = ctxLine_;
+    if (li < 0 || li >= (int)lines_.size()) { mode_ = PAGE; dirty_ = true; return; }
+    const Line& l = lines_[li];
+    // table row with a link
+    if (!l.href.empty()) {
+        std::string target = l.href;
+        if (target[0] == '/' || (target[0] == '.' && target[1] == '/')) {
+            net::Url u;
+            if (net::parseUrl(currentUrl_, u)) target = net::resolve(u, target);
+        }
+        if (itemIdx == 1) downloadFile(target);
+        else navigate(target);
+        return;
+    }
+    int bi = l.block;
+    if (l.group) {
+        size_t s = l.sel < (int)l.items.size() ? (size_t)l.sel : 0;
+        if (s < l.items.size()) bi = l.items[s];
+    }
+    if (bi < 0 || bi >= (int)page_.blocks.size()) { mode_ = PAGE; dirty_ = true; return; }
+    const auto& b = page_.blocks[bi];
+    if (b.kind == BlockKind::Link && !b.href.empty()) {
+        std::string target = b.href;
+        if (target[0] == '/' || (target[0] == '.' && target[1] == '/')) {
+            net::Url u;
+            if (net::parseUrl(currentUrl_, u)) target = net::resolve(u, target);
+        }
+        if (itemIdx == 1) downloadFile(target);
+        else navigate(target);
+    } else if (b.kind == BlockKind::Button) {
+        activate(li);   // full form/button logic
+    } else if (b.kind == BlockKind::Input) {
+        activate(li);   // opens the keyboard
+    } else if (b.kind == BlockKind::Checkbox) {
+        page_.blocks[bi].checked = !page_.blocks[bi].checked;
+        mode_ = PAGE; dirty_ = true;
+    } else if (b.kind == BlockKind::Select && !b.options.empty()) {
+        page_.blocks[bi].selected = (page_.blocks[bi].selected + 1) % b.options.size();
+        mode_ = PAGE; buildLines();
+    }
+}
+
+void Browser::renderContext() {
+    std::string title = "Options";
+    if (ctxLine_ >= 0 && ctxLine_ < (int)lines_.size()) {
+        const Line& l = lines_[ctxLine_];
+        if (!l.text.empty()) title = std::string("Options: ") + font::fit(l.text.c_str(), 70, 1);
+    }
+    auto items = contextItems(ctxLine_);
+    gfx_->fillScreen(0x0000);
+    topBar(gfx_, C_ACCENT);
+    headerTitle(gfx_, title.c_str(), 0x0000);
+    int y = kHeaderH + 6;
+    for (size_t i = 0; i < items.size() && y + lineH() < gfx_->height() - kFooterH; i++, y += lineH()) {
+        bool isSel = (int)i == linklistSel_;
+        if (isSel) gfx_->fillRect(0, y - 1, gfx_->width(), lineH(), C_FOOT);
+        font::text(gfx_, isSel ? 6 : 14, y, font::fit(items[i].c_str(), gfx_->width() - 12, 1), 0xFFFF, 1);
+    }
+    footer(gfx_, "A=do  S/B=close", C_DIM);
+}
+
 bool Browser::loop() {
     static int lastMode = -1;
     if ((int)mode_ != lastMode) {
-        Serial.printf("[ui] mode -> %d (PAGE=0 LINKLIST=1 SETTINGS=2 QUICKSTART=3 INPUT=4 BUSY=5 ERROR=6)\n", (int)mode_);
+        Serial.printf("[ui] mode -> %d (PAGE=0 LINKLIST=1 SETTINGS=2 QUICKSTART=3 INPUT=4 BUSY=5 ERROR=6 DONE=7 DOWNLOADS=8 CONTEXT=9)\n", (int)mode_);
         lastMode = (int)mode_;
     }
     btns_->poll();
@@ -1300,8 +1394,21 @@ bool Browser::loop() {
                 sel_ = -1;
                 act = true;
             } else if (just(Buttons::START)) {
-                if (findActive_ && !findMatches_.empty()) findNext(false);  // prev match
-                else activate(lineCursor_);
+                if (findActive_ && !findMatches_.empty()) {
+                    findNext(false);  // prev match
+                } else {
+                    // START = open the context menu (desktop-browser style) for
+                    // the element under the cursor. A stays the quick "just do
+                    // the default action" path.
+                    auto items = contextItems(lineCursor_);
+                    if (!items.empty()) {
+                        ctxLine_ = lineCursor_;
+                        linklistSel_ = 0;
+                        mode_ = CONTEXT;
+                        dirty_ = true;
+                    }
+                }
+                act = true;
             } else if (just(Buttons::A)) {
                 // A = primary action on the element under the cursor:
                 // link/button -> activate, input -> keyboard, select -> cycle.
@@ -1350,6 +1457,20 @@ bool Browser::loop() {
                 mode_ = PAGE;
             }
             act = true;
+            break;
+        }
+        case CONTEXT: {
+            int n = (int)contextItems(ctxLine_).size();
+            if (n <= 0) { mode_ = PAGE; dirty_ = true; break; }
+            if (just(Buttons::UP)) { linklistSel_ = (linklistSel_ + n - 1) % n; dirty_ = true; act = true; }
+            else if (just(Buttons::DOWN)) { linklistSel_ = (linklistSel_ + 1) % n; dirty_ = true; act = true; }
+            else if (just(Buttons::A)) {
+                contextAct(linklistSel_);   // sets mode_ (PAGE / INPUTMODE / BUSY ...)
+                dirty_ = true; act = true;
+            } else if (just(Buttons::B) || just(Buttons::START)) {
+                mode_ = PAGE;               // START toggles it closed; B closes too
+                dirty_ = true; act = true;
+            }
             break;
         }
         case SETTINGS: {
@@ -1554,6 +1675,7 @@ bool Browser::loop() {
         switch (mode_) {
             case PAGE: renderPage(); break;
             case LINKLIST: renderLinkList(); break;
+            case CONTEXT: renderContext(); break;
             case SETTINGS: {
                 std::vector<std::string> items = {
                     std::string("Font: ") + (fontScale_ == 1 ? "small" : fontScale_ == 2 ? "large" : "xl"),
@@ -1740,7 +1862,7 @@ void Browser::renderPage() {
                  findTerm_.c_str(), findPos_ + 1, (int)findMatches_.size());
         footer(gfx_, fbuf, C_LINK);
     } else {
-        footer(gfx_, "UD=move SEL=jump A=act B=back", C_DIM);
+        footer(gfx_, "UD=move SEL=jump A=act S=menu B=back", C_DIM);
     }
 }
 
