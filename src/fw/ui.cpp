@@ -24,8 +24,8 @@ constexpr int kFooterH = 14;
 constexpr int kBarInset = 25;
 const uint16_t C_ACCENT = 0xFC40;    // pumpkin orange (R255 G137 B0) — Harbuz theme
 const uint16_t C_LINK = 0xFC40;      // orange for links
-const uint16_t C_DIM = 0x841C;       // neutral dim (placeholders, borders)
-const uint16_t C_FOOT = 0x0400;      // dark green (R0 G128 B0) — bottom-bar text
+const uint16_t C_FOOT = 0x0400;      // dark green (R0 G128 B0) — footer, highlights, outlines
+const uint16_t C_DIM = C_FOOT;       // dim text + borders: same dark green (theme-consistent)
 // horizontal group (chip) layout
 constexpr int kGrpBoxH = 16;  // a chip's height
 constexpr int kGrpGap = 5;    // gap between chips / rows
@@ -1596,7 +1596,7 @@ void Browser::renderPopup(const std::string& title, const std::vector<std::strin
     for (size_t i = 0; i < items.size() && y + lineH() < gfx_->height() - kFooterH; i++, y += lineH()) {
         uint16_t c = (int)i == sel ? C_ACCENT : 0xFFFF;
         if ((int)i == sel) {
-            gfx_->fillRect(0, y - 1, gfx_->width(), lineH(), 0x1B37);
+            gfx_->fillRect(0, y - 1, gfx_->width(), lineH(), C_FOOT);
             c = 0xFFFF;
         }
         font::text(gfx_, (int)i == sel ? 6 : 14, y,
@@ -1619,7 +1619,7 @@ void Browser::renderGroupLine(int i, int& y) {
         if (x + bw > W - kGrpPad && x > kGrpPad) { x = kGrpPad; row++; }
         int by = y + row * (kGrpBoxH + kGrpGap);
         bool isSel = onCursor && (int)k == l.sel;
-        gfx_->fillRect(x, by, bw, kGrpBoxH, isSel ? 0x2458 : 0x0000);
+        gfx_->fillRect(x, by, bw, kGrpBoxH, isSel ? C_FOOT : 0x0000);
         gfx_->drawRect(x, by, bw, kGrpBoxH, isSel ? C_ACCENT : C_DIM);
         int tx = x + std::max(2, (bw - tw) / 2);
         font::text(gfx_, tx, by + 1, b.text.c_str(), isSel ? 0xFFFF : C_DIM, 1);
@@ -1681,11 +1681,11 @@ void Browser::renderPage() {
             if (k == BlockKind::Text && page_.blocks[l.block].bold) c = 0xFFFF;
         }
         if (i == lineCursor_) {
-            gfx_->fillRect(0, y - 1, gfx_->width(), lh, 0x1B37);
+            gfx_->fillRect(0, y - 1, gfx_->width(), lh, C_FOOT);
             gfx_->fillRect(0, y - 1, 3, lh, C_ACCENT);
         }
         std::string t = l.text;
-        if (l.pseudo) c = C_DIM;
+        if (l.pseudo) c = (i == lineCursor_) ? 0xFFFF : C_DIM;  // keep readable on the green highlight
         bool isCheck = l.block >= 0 && l.block < (int)page_.blocks.size() &&
                        page_.blocks[l.block].kind == BlockKind::Checkbox;
         if (isCheck) {
@@ -1693,7 +1693,7 @@ void Browser::renderPage() {
             int16_t bx = (i == lineCursor_) ? 8 : 4;
             int16_t by = y + (lh - 12) / 2;
             gfx_->fillRect(bx, by, 12, 12, 0x0000);
-            gfx_->drawRect(bx, by, 12, 12, 0xC63F);
+            gfx_->drawRect(bx, by, 12, 12, C_FOOT);
             if (page_.blocks[l.block].checked) {
                 gfx_->drawLine(bx + 2, by + 6, bx + 5, by + 10, 0xFFFF);
                 gfx_->drawLine(bx + 5, by + 10, bx + 10, by + 2, 0xFFFF);
@@ -1705,7 +1705,7 @@ void Browser::renderPage() {
             int16_t x1 = gfx_->width() - 4;
             int16_t bh = (lh > 18) ? lh - 2 : 16;
             int16_t by = y + (lh - bh) / 2;
-            gfx_->fillRect(x0, by, x1 - x0, bh, 0x2458);
+            gfx_->fillRect(x0, by, x1 - x0, bh, C_FOOT);
             gfx_->fillRect(x0, by + bh - 2, x1 - x0, 2, 0x1224);  // bottom bevel
             gfx_->drawRect(x0, by, x1 - x0, bh, C_ACCENT);
             int16_t tw = font::width(t.c_str(), scale);
@@ -1719,7 +1719,7 @@ void Browser::renderPage() {
             int16_t x1 = gfx_->width() - 4;
             int16_t bh = (lh > 18) ? lh - 2 : 16;
             int16_t by = y + (lh - bh) / 2;
-            gfx_->fillRect(x0, by, x1 - x0, bh, 0x1B37);      // dark fill (matches selection)
+            gfx_->fillRect(x0, by, x1 - x0, bh, C_FOOT);      // dark fill (matches selection)
             gfx_->drawRect(x0, by, x1 - x0, bh, C_ACCENT);    // orange border
             gfx_->fillRect(x0 + 2, by + 2, 1, bh - 4, C_ACCENT);  // left cursor bar
             font::text(gfx_, x0 + 6, by + (bh - 13 * scale) / 2 + (scale > 1 ? 2 : 0),
@@ -1758,7 +1758,7 @@ void Browser::renderLinkList() {
         char num[8];
         snprintf(num, sizeof(num), "%2d ", idx + 1);
         if (idx == linklistSel_) {
-            gfx_->fillRect(0, y - 1, gfx_->width(), lineH(), 0x1B37);
+            gfx_->fillRect(0, y - 1, gfx_->width(), lineH(), C_FOOT);
         }
         font::text(gfx_, 4, y, num, C_DIM, 1);
         font::text(gfx_, 26, y,
