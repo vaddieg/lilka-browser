@@ -549,7 +549,8 @@ static bool isTextResponse() {
     std::string ct = net::lastContentType();
     for (auto& ch : ct) ch = (char)tolower((unsigned char)ch);
     return ct.empty() || ct.rfind("text/", 0) == 0 ||
-           ct == "application/json" || ct == "image/svg+xml";
+           ct == "application/json" || ct == "image/svg+xml" ||
+           ct.find("xhtml") != std::string::npos;  // HTML served as XHTML (Google)
 }
 
 static void transcodeToUtf8(std::string& html) {
@@ -736,8 +737,14 @@ void Browser::finishLoad(const std::string& url, std::string html, const std::st
         std::string ct = net::lastContentType();
         for (auto& ch : ct) ch = (char)tolower((unsigned char)ch);
         bool isText = ct.empty() || ct.rfind("text/", 0) == 0 ||
-                      ct == "application/json" || ct == "image/svg+xml";
-        if (!isText) {
+                      ct == "application/json" || ct == "image/svg+xml" ||
+                      // HTML served as XHTML (e.g. Google's homepage) is a page,
+                      // not a binary file.
+                      ct.find("xhtml") != std::string::npos;
+        // An empty body is never a useful file (e.g. a consent/JS endpoint that
+        // just sets cookies and returns nothing). Don't save it as a phantom
+        // ".bin" — fall through and treat it as a (possibly empty) page.
+        if (!isText && !html.empty()) {
             Serial.printf("[nav] non-text response (%s) -> save as download\n", ct.c_str());
             std::string name;
             {
