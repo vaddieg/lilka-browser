@@ -816,6 +816,23 @@ void Browser::serialCmd(const std::string& in) {
         if (key < Buttons::COUNT) { btns_->inject(key); Serial.printf("[cmd] injected %s\n", k.c_str()); }
         return;
     }
+    if (line.rfind("krel", 0) == 0) {
+        std::string k = line.substr(4);
+        while (!k.empty() && k.front() == ' ') k.erase(k.begin());
+        Buttons::Key key = Buttons::COUNT;
+        if (k == "up") key = Buttons::UP;
+        else if (k == "down") key = Buttons::DOWN;
+        else if (k == "left") key = Buttons::LEFT;
+        else if (k == "right") key = Buttons::RIGHT;
+        else if (k == "a") key = Buttons::A;
+        else if (k == "b") key = Buttons::B;
+        else if (k == "c") key = Buttons::C;
+        else if (k == "d") key = Buttons::D;
+        else if (k == "select") key = Buttons::SELECT;
+        else if (k == "start") key = Buttons::START;
+        if (key < Buttons::COUNT) { btns_->release(key); Serial.printf("[cmd] released %s\n", k.c_str()); }
+        return;
+    }
     if (line.rfind("click", 0) == 0) {
         int n = atoi(line.c_str() + 6);
         if (n >= 0 && n < (int)lines_.size()) {
@@ -876,6 +893,14 @@ void Browser::serialCmd(const std::string& in) {
         }
         return;
     }
+    if (line == "kbval") {
+        std::string v = kb_.value();
+        Serial.printf("[cmd] kb value='%s' (%d bytes)", v.c_str(), (int)v.size());
+        for (size_t i = 0; i < v.size(); i++) Serial.printf(" %02x", (unsigned char)v[i]);
+        Serial.println();
+        return;
+    }
+    if (line == "kbclear") { kb_.reset(); Serial.printf("[cmd] kb reset\n"); return; }
     if (line == "err") { Serial.printf("err: %s\n", errText_.c_str()); return; }
     if (line == "mkt") {
         Serial.printf("[sd] /browser exists=%d\n", (int)SD.exists("/browser"));

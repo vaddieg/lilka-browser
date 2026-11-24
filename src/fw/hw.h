@@ -64,6 +64,8 @@ public:
 
     /// One-shot test hook: force a key press on the next poll (serial "key <name>").
     void inject(Key k) { injected_ |= (1u << k); }
+    /// Test hook: release a key (so the same key can be pressed again). (serial "krel <name>").
+    void release(Key k) { st_[k].pressed = false; st_[k].justReleased = true; }
 
     /// Call from the main loop (~every 5-10ms).
     void poll() {

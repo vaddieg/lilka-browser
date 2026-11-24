@@ -9,6 +9,12 @@ namespace kb {
 constexpr int kPad = 25;
 
 // [lang][layer][ROWS*COLS]
+// INVARIANT: the shift layer (index 1) MUST be the uppercase of the base
+// layer (index 0) at every cell, so that pressing a capital key always
+// yields the capital form of the letter shown on base. (English shift also
+// maps the number row to punctuation; Cyrillic keeps the same digits.)
+// If you edit base, re-derive shift — do not hand-type it (a previous
+// hand-typed shift row had mismatched/shifted letters).
 static const int16_t keys[3][3][ROWS * COLS] = {
     // ---------------- English ----------------
     {
@@ -35,14 +41,14 @@ static const int16_t keys[3][3][ROWS * COLS] = {
         { // base
             '1','2','3','4','5','6','7','8','9','0',
             0x0439,0x0446,0x0443,0x043A,0x0435,0x043D,0x0433,0x0448,0x0449,0x0437, // йцукенгшщз
-            0x0444,0x0456,0x0432,0x0430,0x043F,0x0440,0x043E,0x043B,0x0434,K_BS,   // фывапролд
+            0x0444,0x044B,0x0432,0x0430,0x043F,0x0440,0x043E,0x043B,0x0434,K_BS,   // фывапролд
             K_L0,0x044F,0x0447,0x0441,0x043C,0x0438,0x0442,0x044C,0x0431,K_SP,    // ячсмитьбю
         },
         { // shift
             '1','2','3','4','5','6','7','8','9','0',
             0x0419,0x0426,0x0423,0x041A,0x0415,0x041D,0x0413,0x0428,0x0429,0x0417, // ЙЦУКЕНГШЩЗ
             0x0424,0x042B,0x0412,0x0410,0x041F,0x0420,0x041E,0x041B,0x0414,K_BS,   // ФЫВАПРОЛД
-            K_L0,0x042F,0x0427,0x0421,0x041C,0x0422,0x041C,0x0411,0x042E,K_SP,    // ЯЧСМИТЬБЮ
+            K_L0,0x042F,0x0427,0x0421,0x041C,0x0418,0x0422,0x042C,0x0411,K_SP,    // ЯЧСМИТЬБ
         },
         { // symbols: same as English symbols
             '-','_','=','+','<','>','/',0x27,0x22,'\\',
@@ -61,8 +67,8 @@ static const int16_t keys[3][3][ROWS * COLS] = {
         { // shift
             '1','2','3','4','5','6','7','8','9','0',
             0x0419,0x0426,0x0423,0x041A,0x0415,0x041D,0x0413,0x0428,0x0429,0x0417, // ЙЦУКЕНГШЩЗ
-            0x0424,0x0406,0x0412,0x0410,0x041F,0x0420,0x041E,0x041B,0x0414,K_BS,   // ФІВАПРОЛД
-            K_L0,0x0404,0x0427,0x0421,0x041C,0x0418,0x0422,0x0407,0x0411,K_SP,    // ЄЧСМИТЇБЮ
+            0x0424,0x0407,0x0412,0x0410,0x041F,0x0420,0x041E,0x041B,0x0414,K_BS,   // ФЇВАПРОЛД
+            K_L0,0x0404,0x0427,0x0421,0x041C,0x0406,0x0422,0x042C,0x0411,K_SP,    // ЄЧСМИТІБ
         },
         { // symbols: same as English symbols
             '-','_','=','+','<','>','/',0x27,0x22,'\\',
