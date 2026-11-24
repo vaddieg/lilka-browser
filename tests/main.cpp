@@ -189,6 +189,22 @@ void test_checkboxes() {
     CHECK(pg4.blocks[0].text == "Agree to terms");
 }
 
+void test_disclosure_toggle() {
+    // A checkbox/radio with role="button" is a CSS-only disclosure toggle
+    // (Wikipedia mobile sidebar) and must be skipped, not shown as a checkbox.
+    Page pg = parse("<input type=\"checkbox\" id=\"main-menu-input\" "
+                    "class=\"toggle-list__checkbox\" role=\"button\" "
+                    "aria-expanded=\"false\">"
+                    "<input type=\"checkbox\" name=\"real\" value=\"yes\">");
+    CHECK(countKind(pg, BlockKind::Checkbox) == 1);          // only the real one
+    CHECK(pg.blocks[0].name == "real");                        // the toggle is gone
+    // radio with role=button is also skipped
+    Page pg2 = parse("<input type=\"radio\" role=\"BUTTON\" name=\"r\">"
+                     "<input type=\"radio\" name=\"r2\">");
+    CHECK(countKind(pg2, BlockKind::Checkbox) == 1);
+    CHECK(pg2.blocks[0].name == "r2");
+}
+
 void test_tables() {
     Page pg = parse("<table>"
                     "<tr><th>Key</th><th>Value</th></tr>"
@@ -409,6 +425,7 @@ int main(int argc, char** argv) {
     test_textarea();
     test_submit_button_no_text();
     test_checkboxes();
+    test_disclosure_toggle();
     test_tables();
     test_table_links();
     test_select();

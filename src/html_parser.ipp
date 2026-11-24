@@ -504,6 +504,14 @@ void Parser::feed(const char* data, size_t len) {
                         continue;
                     }
                     if (type == "checkbox" || type == "radio") {
+                        // A checkbox/radio that advertises role="button" is a
+                        // CSS-only disclosure toggle (e.g. Wikipedia mobile
+                        // sidebar's hidden <input> flipped by :checked). It's not
+                        // a real form control and does nothing without JS, so
+                        // don't surface it to the user.
+                        std::string role = attrValue(body, "role");
+                        for (auto& ch : role) ch = (char)tolower((unsigned char)ch);
+                        if (role == "button") { flushText(); continue; }
                         flushText();
                         Block blk;
                         blk.kind = BlockKind::Checkbox;
