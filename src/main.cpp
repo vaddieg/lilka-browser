@@ -43,6 +43,7 @@ void setup() {
 }
 
 void loop() {
+#ifdef DEBUG  // debug CLI (serial command input) — excluded from the release build
     while (Serial.available()) {
         char ch = (char)Serial.read();
         static std::string cmd;
@@ -53,6 +54,7 @@ void loop() {
             cmd += ch;
         }
     }
+#endif
     if (g_browser.loop()) g_buf->flush();
     delay(15);
 }

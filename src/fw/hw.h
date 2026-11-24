@@ -62,15 +62,18 @@ public:
         for (uint8_t i = 0; i < COUNT; i++) pinMode(pins_[i], INPUT_PULLUP);
     }
 
+#ifdef DEBUG  // test hooks used by the serial debug CLI
     /// One-shot test hook: force a key press on the next poll (serial "key <name>").
     void inject(Key k) { injected_ |= (1u << k); }
     /// Test hook: release a key (so the same key can be pressed again). (serial "krel <name>").
     void release(Key k) { st_[k].pressed = false; st_[k].justReleased = true; }
+#endif
 
     /// Call from the main loop (~every 5-10ms).
     void poll() {
         uint32_t now = millis();
         for (uint8_t i = 0; i < COUNT; i++) {
+#ifdef DEBUG
             bool injected = injected_ & (1u << i);
             if (injected) {
                 injected_ &= ~(1u << i);
@@ -81,6 +84,7 @@ public:
                 lastChange_[i] = now;
                 continue;
             }
+#endif
             bool pressed = !digitalRead(pins_[i]);
             if (pressed != raw_[i]) {
                 // physical edge vs last read. Record as candidate; it is
@@ -120,7 +124,9 @@ public:
     bool pressed(Key k) { return st_[k].pressed; }
 
 private:
+#ifdef DEBUG
     uint32_t injected_ = 0;
+#endif
     const uint8_t pins_[COUNT] = {
         hw::PIN_UP, hw::PIN_DOWN, hw::PIN_LEFT, hw::PIN_RIGHT,
         hw::PIN_A, hw::PIN_B, hw::PIN_C, hw::PIN_D,

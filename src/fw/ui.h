@@ -35,7 +35,9 @@ public:
     /// Poll buttons, advance state, redraw on change.
     /// Returns true if a frame was drawn (caller must flush the canvas).
     bool loop();
+#ifdef DEBUG  // debug CLI (serial commands) — excluded from the release build
     void serialCmd(const std::string& line);  // debug/autotest: "goto <url>", "back", "quickstart"
+#endif
 
 private:
     // state

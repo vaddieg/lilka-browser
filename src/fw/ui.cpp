@@ -850,6 +850,7 @@ void Browser::submitPost(const std::string& url,
     finishLoad(url, html, finalUrl);
 }
 
+#ifdef DEBUG  // debug CLI (serial commands) — excluded from the release build
 void Browser::serialCmd(const std::string& in) {
     std::string line;
     size_t b = in.find_first_not_of(" \t\r\n");
@@ -1151,6 +1152,7 @@ void Browser::serialCmd(const std::string& in) {
         Serial.println("\nDUMPEND");
     }
 }
+#endif  // DEBUG
 
 void Browser::goBack() {
     if (history_.size() <= 1) {
